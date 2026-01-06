@@ -108,10 +108,10 @@ fn list_monitors(cli: &Cli) -> Result<()> {
 
     for name in names {
         if let Some(mon) = monitors.monitors.get(name) {
-            let default_marker = if mon.default { " (default)" } else { "" };
+            let primary_marker = if mon.primary { " (primary)" } else { "" };
             let summary = format!(
                 "{}x{}@{}Hz VRR={} HDR={}{}",
-                mon.width, mon.height, mon.refresh, mon.vrr, mon.hdr, default_marker
+                mon.width, mon.height, mon.refreshRate, mon.vrr, mon.hdr, primary_marker
             );
             output::profile_summary(name, &summary);
         }

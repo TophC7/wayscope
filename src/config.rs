@@ -56,17 +56,21 @@ pub struct MonitorsConfig {
 }
 
 /// A single monitor definition with resolution and capabilities.
+///
+/// Field names match mix.nix monitor format for consistency.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(non_snake_case)] // Match mix.nix field names
 pub struct MonitorDef {
     pub width: u32,
     pub height: u32,
-    pub refresh: u32,
+    #[serde(alias = "refresh")]
+    pub refreshRate: u32,
     #[serde(default)]
     pub vrr: bool,
     #[serde(default)]
     pub hdr: bool,
-    #[serde(default)]
-    pub default: bool,
+    #[serde(default, alias = "default")]
+    pub primary: bool,
 }
 
 impl MonitorsConfig {
@@ -98,8 +102,8 @@ impl MonitorsConfig {
     fn default_monitor(&self) -> Result<(&String, &MonitorDef)> {
         self.monitors
             .iter()
-            .find(|(_, m)| m.default)
-            .with_context(|| "No default monitor. Set 'default: true' on one monitor.")
+            .find(|(_, m)| m.primary)
+            .with_context(|| "No primary monitor. Set 'primary: true' on one monitor.")
     }
 }
 
@@ -300,7 +304,7 @@ fn base_options(monitor: &MonitorDef) -> HashMap<String, OptionValue> {
     opts.insert("immediate-flips".to_string(), OptionValue::Bool(true));
     opts.insert(
         "nested-refresh".to_string(),
-        OptionValue::Int(i64::from(monitor.refresh)),
+        OptionValue::Int(i64::from(monitor.refreshRate)),
     );
     opts.insert(
         "output-height".to_string(),
@@ -329,14 +333,14 @@ monitors:
   main:
     width: 2560
     height: 1440
-    refresh: 165
+    refreshRate: 165
     vrr: true
     hdr: true
-    default: true
+    primary: true
   tv:
     width: 3840
     height: 2160
-    refresh: 120
+    refreshRate: 120
     hdr: true
 "#;
 

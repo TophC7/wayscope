@@ -15,38 +15,40 @@ use crate::output;
 const DEFAULT_MONITORS: &str = r#"# Wayscope Monitor Configuration
 #
 # Define your displays here with their hardware capabilities.
-# One monitor must be marked as default.
+# One monitor must be marked as primary.
 #
 # Note: These values represent what your monitor CAN do.
 # Profiles decide what to actually ENABLE (and can use less than full capability).
+#
+# Field names match mix.nix monitor format for compatibility.
 
 monitors:
-  # Primary gaming monitor - marked as default
+  # Primary gaming monitor
   main:
     width: 1920           # Native horizontal resolution
     height: 1080          # Native vertical resolution
-    refresh: 60           # Refresh rate in Hz
+    refreshRate: 60       # Refresh rate in Hz
     vrr: false            # Hardware supports VRR (FreeSync/G-Sync)?
     hdr: false            # Hardware supports HDR?
-    default: true         # Use this monitor when profile doesn't specify one
+    primary: true         # Use this monitor when profile doesn't specify one
 
   # Example: Secondary monitor (TV for couch gaming)
   # tv:
   #   width: 3840
   #   height: 2160
-  #   refresh: 120
+  #   refreshRate: 120
   #   vrr: false
   #   hdr: true
-  #   default: false
+  #   primary: false
 
   # Example: Portable/laptop display
   # portable:
   #   width: 1920
   #   height: 1080
-  #   refresh: 60
+  #   refreshRate: 60
   #   vrr: false
   #   hdr: false
-  #   default: false
+  #   primary: false
 "#;
 
 /// Default config.yaml content with all fields documented.
@@ -107,13 +109,21 @@ profiles:
       # DXVK_ASYNC: 1              # Enable DXVK async shader compilation
       # PROTON_USE_WINED3D: 1      # Use WineD3D instead of DXVK
 
-  # Example: HDR gaming profile
+  # Example: HDR gaming profile (for games with native HDR support)
   # hdr:
   #   useHDR: true
   #   useWSI: true
   #   options:
+  #     backend: wayland
+  
+  # Example: Auto-HDR profile (forced tone mapping for non-HDR games)
+  # auto-hdr:
+  #   useHDR: true
+  #   useWSI: false
+  #   options:
   #     backend: sdl
-
+  #     hdr-itm-enabled: true
+  
   # Example: Performance profile with FSR upscaling
   # performance:
   #   useHDR: false
