@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use crate::config::OptionValue;
 use crate::profile::ResolvedProfile;
 
-/// A fully constructed command ready for execution.
 #[derive(Debug)]
 pub struct GamescopeCommand {
     pub binary: String,
@@ -23,7 +22,6 @@ pub struct GamescopeCommand {
 }
 
 impl GamescopeCommand {
-    /// Format the command as a displayable string.
     pub fn display(&self) -> String {
         let capacity = self.binary.len()
             + self.args.iter().map(|s| s.len() + 1).sum::<usize>()
@@ -53,7 +51,6 @@ impl GamescopeCommand {
     }
 }
 
-/// Build a gamescope command from a resolved profile.
 pub fn build(profile: &ResolvedProfile, child_cmd: &[String]) -> GamescopeCommand {
     let mut args = build_args(profile);
 
@@ -72,7 +69,6 @@ pub fn build(profile: &ResolvedProfile, child_cmd: &[String]) -> GamescopeComman
     }
 }
 
-/// Build gamescope CLI arguments from profile options.
 fn build_args(profile: &ResolvedProfile) -> Vec<String> {
     let mut args = Vec::with_capacity(profile.options.len() * 2);
 
@@ -97,9 +93,7 @@ fn build_args(profile: &ResolvedProfile) -> Vec<String> {
     args
 }
 
-/// Execute the gamescope command, replacing the current process.
-///
-/// Does not return on success - replaces current process with gamescope.
+/// Replaces the current process with gamescope (does not return on success).
 pub fn exec(cmd: GamescopeCommand) -> Result<()> {
     let mut command = Command::new(&cmd.binary);
 
@@ -120,7 +114,7 @@ pub fn exec(cmd: GamescopeCommand) -> Result<()> {
     Err(err).context("Failed to execute gamescope")
 }
 
-/// Execute a command directly without gamescope wrapper.
+/// Bypass gamescope, run command directly (used when already inside gamescope).
 pub fn exec_direct(child_cmd: &[String]) -> Result<()> {
     if child_cmd.is_empty() {
         anyhow::bail!("No command provided");

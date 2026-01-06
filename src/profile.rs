@@ -29,48 +29,31 @@ const BASE_ENV: &[(&str, &str)] = &[
 /// set of options and environment variables for gamescope.
 #[derive(Debug, Clone)]
 pub struct ResolvedProfile {
-    /// Profile name for display purposes.
     pub name: String,
-
-    /// Monitor name being used.
     pub monitor_name: String,
-
-    /// Path to gamescope binary.
     pub binary: String,
-
-    /// Whether HDR output is enabled.
     pub use_hdr: bool,
-
-    /// Whether Gamescope WSI is enabled.
     pub use_wsi: bool,
-
-    /// Fully merged gamescope CLI options.
+    /// Merged gamescope CLI options (monitor defaults + profile overrides).
     pub options: HashMap<String, OptionValue>,
-
-    /// User-specified environment variables.
+    /// Profile-specific environment variables (merged with base env at runtime).
     pub user_env: HashMap<String, String>,
 }
 
 impl ResolvedProfile {
-    /// Generate the complete environment variable list.
-    ///
-    /// Combines base environment, profile environment, and conditional
-    /// HDR/WSI variables into a sorted list for consistent output.
+    /// Builds the complete environment: base vars + user vars + conditional HDR/WSI vars.
     pub fn environment(&self) -> Vec<(String, String)> {
         let mut env: HashMap<String, String> = BASE_ENV
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect();
 
-        // Merge user-specified environment
         env.extend(self.user_env.clone());
 
-        // Conditional WSI environment
         if self.use_wsi {
             env.insert("ENABLE_GAMESCOPE_WSI".to_string(), "1".to_string());
         }
 
-        // Conditional HDR environment
         if self.use_hdr {
             env.insert("DXVK_HDR".to_string(), "1".to_string());
             env.insert("ENABLE_HDR_WSI".to_string(), "1".to_string());
@@ -82,10 +65,7 @@ impl ResolvedProfile {
         sorted
     }
 
-    /// Check if the HDR workaround is needed.
-    ///
-    /// When running with wayland backend + WSI + HDR, the child process
-    /// needs DISABLE_HDR_WSI=1 to trick gamescope into properly enabling HDR.
+    /// Wayland backend + WSI + HDR requires DISABLE_HDR_WSI=1 on the child process.
     pub fn needs_hdr_workaround(&self) -> bool {
         let backend = self
             .options

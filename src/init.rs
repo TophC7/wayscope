@@ -1,7 +1,4 @@
-//! Configuration file initialization.
-//!
-//! Creates starter configuration files with all available options
-//! documented so users can see everything they can configure.
+//! Creates starter config files with all options documented.
 
 use std::fs;
 use std::path::Path;
@@ -11,7 +8,6 @@ use anyhow::{Context, Result};
 use crate::config::MonitorsConfig;
 use crate::output;
 
-/// Default monitors.yaml content with all fields documented.
 const DEFAULT_MONITORS: &str = r#"# Wayscope Monitor Configuration
 #
 # Define your displays here with their hardware capabilities.
@@ -51,7 +47,6 @@ monitors:
   #   primary: false
 "#;
 
-/// Default config.yaml content with all fields documented.
 const DEFAULT_CONFIG: &str = r#"# Wayscope Profile Configuration
 #
 # Define gaming profiles here. Each profile specifies gamescope settings.
@@ -119,7 +114,7 @@ profiles:
   # Example: Auto-HDR profile (forced tone mapping for non-HDR games)
   # auto-hdr:
   #   useHDR: true
-  #   useWSI: false
+  #   useWSI: true
   #   options:
   #     backend: sdl
   #     hdr-itm-enabled: true
@@ -149,37 +144,18 @@ profiles:
   #   useWSI: true
 "#;
 
-/// Initialize configuration directory with starter files.
-///
-/// Creates ~/.config/wayscope/ with monitors.yaml and config.yaml
-/// containing documented examples of all available options.
-///
-/// # Arguments
-///
-/// * `force` - If true, overwrite existing files. If false, skip existing files.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The config directory cannot be created
-/// - Files cannot be written
-/// - Files exist and force is false
 pub fn run(force: bool) -> Result<()> {
     let config_dir = MonitorsConfig::config_dir();
     let monitors_path = config_dir.join("monitors.yaml");
     let profiles_path = config_dir.join("config.yaml");
 
-    // Create config directory if it doesn't exist
     if !config_dir.exists() {
         fs::create_dir_all(&config_dir)
             .with_context(|| format!("Failed to create directory: {}", config_dir.display()))?;
         output::success(&format!("Created {}", config_dir.display()));
     }
 
-    // Write monitors.yaml
     write_config_file(&monitors_path, DEFAULT_MONITORS, force)?;
-
-    // Write config.yaml
     write_config_file(&profiles_path, DEFAULT_CONFIG, force)?;
 
     output::section("\nConfiguration initialized! Next steps:");
@@ -190,7 +166,6 @@ pub fn run(force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Write a configuration file, respecting the force flag.
 fn write_config_file(path: &Path, content: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         output::warn(&format!(
@@ -201,7 +176,6 @@ fn write_config_file(path: &Path, content: &str, force: bool) -> Result<()> {
     }
 
     if path.exists() && force {
-        // Check if current content differs before overwriting
         let existing = fs::read_to_string(path).unwrap_or_default();
         if existing == content {
             output::info(&format!("Unchanged {}", path.display()));

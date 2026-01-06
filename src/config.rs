@@ -12,16 +12,11 @@ use std::path::{Path, PathBuf};
 
 use crate::profile::ResolvedProfile;
 
-/// Parse YAML content with user-friendly error messages.
-///
-/// YAML is notoriously sensitive to indentation and spacing.
-/// This function wraps serde_yaml parsing with helpful hints
-/// when syntax errors occur.
+/// Wraps serde_yaml with helpful hints for common YAML syntax errors.
 fn parse_yaml<T: DeserializeOwned>(content: &str, path: &Path) -> Result<T> {
     serde_yaml::from_str(content).map_err(|e| {
         let mut msg = format!("Failed to parse {}\n", path.display());
 
-        // Include location info if available
         if let Some(location) = e.location() {
             msg.push_str(&format!(
                 "  Error at line {}, column {}\n",
@@ -30,10 +25,7 @@ fn parse_yaml<T: DeserializeOwned>(content: &str, path: &Path) -> Result<T> {
             ));
         }
 
-        // Include the actual error
         msg.push_str(&format!("  {}\n\n", e));
-
-        // Add helpful hints for common YAML issues
         msg.push_str("Hint: YAML is sensitive to indentation. Common issues:\n");
         msg.push_str("  - Use spaces, not tabs\n");
         msg.push_str("  - Ensure consistent indentation (2 spaces recommended)\n");
@@ -48,18 +40,15 @@ fn parse_yaml<T: DeserializeOwned>(content: &str, path: &Path) -> Result<T> {
 // Monitor Configuration
 // ============================================================================
 
-/// Root structure for monitors.yaml.
 #[derive(Debug, Deserialize)]
 pub struct MonitorsConfig {
     #[serde(default)]
     pub monitors: HashMap<String, MonitorDef>,
 }
 
-/// A single monitor definition with resolution and capabilities.
-///
-/// Field names match mix.nix monitor format for consistency.
+/// Field names match mix.nix format (refreshRate, not refresh_rate).
 #[derive(Debug, Clone, Deserialize)]
-#[allow(non_snake_case)] // Match mix.nix field names
+#[allow(non_snake_case)]
 pub struct MonitorDef {
     pub width: u32,
     pub height: u32,
@@ -74,19 +63,16 @@ pub struct MonitorDef {
 }
 
 impl MonitorsConfig {
-    /// Returns the default configuration directory path.
     pub fn config_dir() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("wayscope")
     }
 
-    /// Returns the default monitors file path.
     pub fn default_path() -> PathBuf {
         Self::config_dir().join("monitors.yaml")
     }
 
-    /// Load monitors configuration from a YAML file.
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read: {}", path.display()))?;
@@ -111,14 +97,12 @@ impl MonitorsConfig {
 // Profile Configuration
 // ============================================================================
 
-/// Root structure for config.yaml.
 #[derive(Debug, Deserialize)]
 pub struct ProfilesConfig {
     #[serde(default)]
     pub profiles: HashMap<String, ProfileDef>,
 }
 
-/// A single profile definition.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileDef {
     pub monitor: Option<String>,
@@ -139,12 +123,10 @@ fn default_binary() -> String {
 }
 
 impl ProfilesConfig {
-    /// Returns the default profiles file path.
     pub fn default_path() -> PathBuf {
         MonitorsConfig::config_dir().join("config.yaml")
     }
 
-    /// Load profiles configuration from a YAML file.
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read: {}", path.display()))?;
@@ -168,7 +150,6 @@ impl ProfilesConfig {
 // Value Types
 // ============================================================================
 
-/// Gamescope option value (string, integer, or boolean).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum OptionValue {
@@ -187,7 +168,6 @@ impl std::fmt::Display for OptionValue {
     }
 }
 
-/// Environment variable value (string or integer).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum EnvValue {
@@ -208,19 +188,16 @@ impl std::fmt::Display for EnvValue {
 // Combined Configuration
 // ============================================================================
 
-/// Combined configuration from both files with resolution methods.
 pub struct Config {
     pub monitors: MonitorsConfig,
     pub profiles: ProfilesConfig,
 }
 
 impl Config {
-    /// Load configuration from specified paths.
     pub fn load(monitors_path: &Path, profiles_path: &Path) -> Result<Self> {
         let monitors = MonitorsConfig::load(monitors_path)?;
         let profiles = ProfilesConfig::load(profiles_path)?;
 
-        // Validate monitor references
         for (name, profile) in &profiles.profiles {
             if let Some(ref mon_name) = profile.monitor {
                 if !monitors.monitors.contains_key(mon_name) {
@@ -236,11 +213,10 @@ impl Config {
         Ok(Self { monitors, profiles })
     }
 
-    /// Resolve a profile by name into a complete configuration.
+    /// Combines profile settings with monitor config into a ready-to-execute profile.
     pub fn resolve_profile(&self, name: &str) -> Result<ResolvedProfile> {
         let profile = self.profiles.get(name)?;
 
-        // Get the monitor (profile-specified or default)
         let (monitor_name, monitor) = match &profile.monitor {
             Some(n) => (n.clone(), self.monitors.get(n)?),
             None => {
@@ -249,13 +225,11 @@ impl Config {
             }
         };
 
-        // Build base options from monitor config
         let mut options = base_options(monitor);
         for (key, value) in &profile.options {
             options.insert(key.clone(), value.clone());
         }
 
-        // Convert user environment
         let user_env = profile
             .environment
             .iter()
@@ -273,7 +247,6 @@ impl Config {
         })
     }
 
-    /// List all profiles with summary information.
     pub fn list_profiles(&self) -> Vec<(String, String)> {
         self.profiles
             .names()
@@ -291,7 +264,7 @@ impl Config {
     }
 }
 
-/// Build base gamescope options from monitor configuration.
+/// Sensible gamescope defaults derived from monitor specs.
 fn base_options(monitor: &MonitorDef) -> HashMap<String, OptionValue> {
     let mut opts = HashMap::with_capacity(10);
 

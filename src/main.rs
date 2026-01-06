@@ -29,9 +29,7 @@ fn main() -> Result<()> {
     }
 }
 
-/// Execute gamescope with the selected profile configuration.
 fn run_gamescope(cli: &Cli, args: &cli::RunArgs) -> Result<()> {
-    // Check if already running inside gamescope
     if std::env::var("GAMESCOPE_WAYLAND_DISPLAY").is_ok() {
         output::warn("Already inside Gamescope, running command directly...");
         return command::exec_direct(&args.command);
@@ -52,7 +50,6 @@ fn run_gamescope(cli: &Cli, args: &cli::RunArgs) -> Result<()> {
     command::exec(cmd)
 }
 
-/// List all available profiles with their key settings.
 fn list_profiles(cli: &Cli) -> Result<()> {
     let config = load_config(cli)?;
 
@@ -63,7 +60,6 @@ fn list_profiles(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Show detailed information about a specific profile.
 fn show_profile(cli: &Cli, profile_name: &str) -> Result<()> {
     let config = load_config(cli)?;
     let profile = config
@@ -92,7 +88,6 @@ fn show_profile(cli: &Cli, profile_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// List all configured monitors.
 fn list_monitors(cli: &Cli) -> Result<()> {
     let path = cli
         .monitors
@@ -119,7 +114,6 @@ fn list_monitors(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Load configuration from files, using CLI overrides or default paths.
 fn load_config(cli: &Cli) -> Result<Config> {
     let monitors_path = cli
         .monitors

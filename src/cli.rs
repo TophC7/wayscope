@@ -31,7 +31,6 @@ pub struct Cli {
     pub command: Commands,
 }
 
-/// Available subcommands for wayscope.
 #[derive(Subcommand)]
 pub enum Commands {
     /// Initialize configuration files with examples
@@ -75,7 +74,6 @@ pub enum Commands {
     Monitors,
 }
 
-/// Arguments for the run subcommand.
 #[derive(Parser)]
 pub struct RunArgs {
     /// Profile to use

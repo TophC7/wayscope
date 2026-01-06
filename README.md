@@ -62,7 +62,7 @@ profiles:
 
   performance:
     useHDR: false
-    options:
+    options: # Any gamescope --flag
       nested-width: 1920
       nested-height: 1080
       filter: fsr
