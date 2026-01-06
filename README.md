@@ -6,7 +6,9 @@
   Wayscope
 </h1>
 
-Profile-based [gamescope](https://github.com/ValveSoftware/gamescope) wrapper for gaming on Linux.
+> Profile-based [gamescope](https://github.com/ValveSoftware/gamescope) wrapper for gaming on Linux.
+>
+> [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/TophC7/wayscope)
 
 ## Why wayscope?
 
