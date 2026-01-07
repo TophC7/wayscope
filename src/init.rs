@@ -104,6 +104,12 @@ profiles:
       # DXVK_ASYNC: 1              # Enable DXVK async shader compilation
       # PROTON_USE_WINED3D: 1      # Use WineD3D instead of DXVK
 
+    # Environment variables to remove (unset) from the child process
+    # This removes variables from both wayscope defaults AND parent environment
+    # unset:
+    #   - SDL_VIDEODRIVER         # Remove forced Wayland driver
+    #   - PROTON_ENABLE_WAYLAND   # Disable Proton Wayland
+
   # Example: HDR gaming profile (for games with native HDR support)
   # hdr:
   #   useHDR: true
@@ -183,8 +189,7 @@ fn write_config_file(path: &Path, content: &str, force: bool) -> Result<()> {
         }
     }
 
-    fs::write(path, content)
-        .with_context(|| format!("Failed to write: {}", path.display()))?;
+    fs::write(path, content).with_context(|| format!("Failed to write: {}", path.display()))?;
 
     if force && path.exists() {
         output::success(&format!("Overwrote {}", path.display()));

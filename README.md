@@ -21,6 +21,8 @@ Gamescope can be a guessing game and insanely frustrating to use; variables, CLI
 - **Resolution & refresh** - Derives `--output-width`, `--output-height`, `--nested-refresh` from your monitor config
 - **WSI layer** - Manages `ENABLE_GAMESCOPE_WSI` for proper Vulkan integration
 - **Profile switching** - Easily swap between HDR, SDR, performance, etc configs
+- **Skip gamescope** - Use `--skip-gamescope` to apply profile environment setup without the gamescope wrapper
+- **Unset variables** - Remove inherited environment variables per-profile for fine-grained control
 
 ## Quick Start
 
@@ -75,12 +77,14 @@ Profile values override monitor defaults. Run `wayscope init` to create a defaul
 ## Commands
 
 ```bash
-wayscope init              # Create config files with examples
-wayscope run <command>     # Run through gamescope (default profile)
-wayscope run -p hdr steam  # Run with specific profile
-wayscope list              # List profiles
-wayscope show <profile>    # Show resolved settings
-wayscope monitors          # List monitors
+wayscope init                           # Create config files with examples
+wayscope run <command>                  # Run through gamescope (default profile)
+wayscope run -p hdr steam               # Run with specific profile
+wayscope run -s bash                    # Skip gamescope, run command directly with profile env
+wayscope run -sp wayland %command%      # Skip gamescope, use profile env with gamemode
+wayscope list                           # List profiles
+wayscope show <profile>                 # Show resolved settings
+wayscope monitors                       # List monitors
 ```
 
 ## Installation
@@ -139,6 +143,7 @@ Then configure profiles and wrappers:
         useHDR = true;
         useWSI = true;
         options.backend = "wayland";
+        # unset = [ "SOME_VARIABLE" ];
       };
 
       steam = {
@@ -177,6 +182,32 @@ Then configure profiles and wrappers:
 
 Wayscope started as `gamescoperun` inside [play.nix](https://github.com/TophC7/play.nix), a NixOS flake I use for my own gaming setup. If you want Steam with Proton-CachyOS, Gamemode, ananicy, LACT for AMD GPUs, etc. already wired up, it might save you some time.
 
+## Advanced Usage
+
+### Skip Gamescope with `--skip-gamescope`
+
+Use the `--skip-gamescope` flag (short form: `-s`) to apply profile environment variables without wrapping your command in gamescope. This is useful for games that run well/better without gamescope but still need some environment setup.
+
+All environment variables from the profile are applied, including base variables (RADV, Wayland setup, etc.) and any HDR/WSI configuration.
+
+### Remove Variables with `unset`
+
+Use the `unset` field in profiles to remove specific environment variables from executed process. This is useful for removing inherited variables that interfere with games.
+
+Example:
+```yaml
+profiles:
+  wayland-native:
+    useWSI: true
+    unset:
+      - DISPLAY # Unset X11 display
+```
+
+Then assuming you have a Proton version that supports Wayland natively, you can use this profile to spawn the game in a pure Wayland environment:
+
+```bash
+wayscope run -sp wayland-native %command%
+```
 
 <h2>
   Steam and Backend Limitations

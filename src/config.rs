@@ -12,6 +12,96 @@ use std::path::{Path, PathBuf};
 
 use crate::profile::ResolvedProfile;
 
+// ============================================================================
+// Environment Variable Name Validation
+// ============================================================================
+
+/// Validates that an environment variable name follows POSIX conventions.
+///
+/// POSIX environment variable names must:
+/// - Start with a letter (A-Z, a-z) or underscore (_)
+/// - Contain only letters, digits (0-9), and underscores
+/// - Not be empty
+///
+/// # Arguments
+///
+/// * `name` - The environment variable name to validate
+///
+/// # Returns
+///
+/// `true` if the name is valid, `false` otherwise
+///
+/// # Examples
+///
+/// ```
+/// assert!(is_valid_env_var_name("MY_VAR"));
+/// assert!(is_valid_env_var_name("_PRIVATE"));
+/// assert!(is_valid_env_var_name("var123"));
+/// assert!(!is_valid_env_var_name(""));        // Empty
+/// assert!(!is_valid_env_var_name("123VAR"));  // Starts with digit
+/// assert!(!is_valid_env_var_name("MY=VAR"));  // Contains =
+/// assert!(!is_valid_env_var_name("MY VAR"));  // Contains space
+/// ```
+fn is_valid_env_var_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    let mut chars = name.chars();
+
+    // First character must be letter or underscore
+    // Note: Using pattern matching for clarity - this is a Rust idiom
+    // that Python developers should recognize as similar to `if c in 'abc...'`
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+
+    // Remaining characters must be letters, digits, or underscores
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Validates all environment variable names in a profile and returns errors for invalid ones.
+///
+/// # Arguments
+///
+/// * `profile_name` - Name of the profile (for error messages)
+/// * `env_keys` - Iterator of environment variable names to validate
+/// * `unset_vars` - List of variables to unset
+///
+/// # Returns
+///
+/// `Ok(())` if all names are valid, `Err` with details of invalid names otherwise
+fn validate_env_var_names<'a>(
+    profile_name: &str,
+    env_keys: impl Iterator<Item = &'a String>,
+    unset_vars: &[String],
+) -> Result<()> {
+    let mut invalid = Vec::new();
+
+    for name in env_keys {
+        if !is_valid_env_var_name(name) {
+            invalid.push(format!("environment key '{}'", name));
+        }
+    }
+
+    for name in unset_vars {
+        if !is_valid_env_var_name(name) {
+            invalid.push(format!("unset entry '{}'", name));
+        }
+    }
+
+    if invalid.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "Profile '{}': invalid environment variable names: {}",
+            profile_name,
+            invalid.join(", ")
+        )
+    }
+}
+
 /// Wraps serde_yaml with helpful hints for common YAML syntax errors.
 fn parse_yaml<T: DeserializeOwned>(content: &str, path: &Path) -> Result<T> {
     serde_yaml::from_str(content).map_err(|e| {
@@ -116,6 +206,8 @@ pub struct ProfileDef {
     pub options: HashMap<String, OptionValue>,
     #[serde(default)]
     pub environment: HashMap<String, EnvValue>,
+    #[serde(default)]
+    pub unset: Vec<String>,
 }
 
 fn default_binary() -> String {
@@ -188,6 +280,7 @@ impl std::fmt::Display for EnvValue {
 // Combined Configuration
 // ============================================================================
 
+#[derive(Debug)]
 pub struct Config {
     pub monitors: MonitorsConfig,
     pub profiles: ProfilesConfig,
@@ -198,7 +291,12 @@ impl Config {
         let monitors = MonitorsConfig::load(monitors_path)?;
         let profiles = ProfilesConfig::load(profiles_path)?;
 
+        // Validate each profile
         for (name, profile) in &profiles.profiles {
+            // Validate environment variable names (both set and unset)
+            validate_env_var_names(name, profile.environment.keys(), &profile.unset)?;
+
+            // Validate monitor reference exists
             if let Some(ref mon_name) = profile.monitor {
                 if !monitors.monitors.contains_key(mon_name) {
                     bail!(
@@ -208,6 +306,8 @@ impl Config {
                     );
                 }
             }
+            // Note: We don't deduplicate unset vars because env_remove() is idempotent.
+            // Duplicate entries in the config are harmless and removing them adds complexity.
         }
 
         Ok(Self { monitors, profiles })
@@ -244,6 +344,7 @@ impl Config {
             use_wsi: profile.use_wsi.unwrap_or(true),
             options,
             user_env,
+            unset_vars: profile.unset.clone(),
         })
     }
 
@@ -257,7 +358,8 @@ impl Config {
                         "monitor={} HDR={} WSI={}",
                         p.monitor_name, p.use_hdr, p.use_wsi
                     );
-                    (name.clone(), summary)
+                    // p.name is already owned; no need to clone `name` again
+                    (p.name, summary)
                 })
             })
             .collect()
@@ -394,5 +496,243 @@ profiles:
         let config = test_config();
         let profiles = config.list_profiles();
         assert_eq!(profiles.len(), 4);
+    }
+
+    #[test]
+    fn test_unset_in_resolved_profile() {
+        let profiles_yaml = r#"
+profiles:
+  with-unset:
+    useWSI: true
+    environment:
+      CUSTOM: "value"
+    unset:
+      - SDL_VIDEODRIVER
+      - CUSTOM
+"#;
+
+        let profiles: ProfilesConfig = serde_yaml::from_str(profiles_yaml).unwrap();
+        let monitors_yaml = r#"
+monitors:
+  main:
+    width: 2560
+    height: 1440
+    refreshRate: 165
+    primary: true
+"#;
+        let monitors: MonitorsConfig = serde_yaml::from_str(monitors_yaml).unwrap();
+        let config = Config { monitors, profiles };
+
+        let profile = config.resolve_profile("with-unset").unwrap();
+        assert_eq!(profile.unset_vars.len(), 2);
+        assert!(profile.unset_vars.contains(&"SDL_VIDEODRIVER".to_string()));
+        assert!(profile.unset_vars.contains(&"CUSTOM".to_string()));
+
+        // Verify unset works in environment
+        let env = profile.environment();
+        let env_map: HashMap<_, _> = env.into_iter().collect();
+        assert!(!env_map.contains_key("SDL_VIDEODRIVER"));
+        assert!(!env_map.contains_key("CUSTOM"));
+    }
+
+    // ========================================================================
+    // Environment Variable Name Validation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_valid_env_var_names() {
+        // Standard POSIX-compliant names
+        assert!(is_valid_env_var_name("MY_VAR"));
+        assert!(is_valid_env_var_name("_PRIVATE"));
+        assert!(is_valid_env_var_name("var123"));
+        assert!(is_valid_env_var_name("A"));
+        assert!(is_valid_env_var_name("_"));
+        assert!(is_valid_env_var_name("SDL_VIDEODRIVER"));
+        assert!(is_valid_env_var_name("DXVK_HDR"));
+        assert!(is_valid_env_var_name("PROTON_ENABLE_WAYLAND"));
+    }
+
+    #[test]
+    fn test_invalid_env_var_names() {
+        // Empty string
+        assert!(!is_valid_env_var_name(""));
+        // Starts with digit
+        assert!(!is_valid_env_var_name("123VAR"));
+        assert!(!is_valid_env_var_name("1"));
+        // Contains equals sign (would break shell parsing)
+        assert!(!is_valid_env_var_name("MY=VAR"));
+        assert!(!is_valid_env_var_name("VAR="));
+        // Contains space
+        assert!(!is_valid_env_var_name("MY VAR"));
+        assert!(!is_valid_env_var_name(" VAR"));
+        // Contains special characters
+        assert!(!is_valid_env_var_name("VAR$NAME"));
+        assert!(!is_valid_env_var_name("VAR-NAME"));
+        assert!(!is_valid_env_var_name("VAR.NAME"));
+    }
+
+    #[test]
+    fn test_validate_env_var_names_success() {
+        let env_keys = vec![
+            "VALID_VAR".to_string(),
+            "_ANOTHER".to_string(),
+            "third123".to_string(),
+        ];
+        let unset = vec!["SDL_VIDEODRIVER".to_string()];
+
+        let result = validate_env_var_names("test-profile", env_keys.iter(), &unset);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_env_var_names_invalid_env_key() {
+        let env_keys = vec!["VALID".to_string(), "INVALID=KEY".to_string()];
+        let unset = vec![];
+
+        let result = validate_env_var_names("test-profile", env_keys.iter(), &unset);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("INVALID=KEY"));
+        assert!(err.contains("test-profile"));
+    }
+
+    #[test]
+    fn test_validate_env_var_names_invalid_unset() {
+        let env_keys: Vec<String> = vec![];
+        let unset = vec!["".to_string()]; // Empty string is invalid
+
+        let result = validate_env_var_names("test-profile", env_keys.iter(), &unset);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unset entry"));
+    }
+
+    // ========================================================================
+    // Integration Tests for Validation During Config Load
+    // ========================================================================
+    //
+    // Note: Deduplication tests were removed because env_remove() is idempotent.
+    // Duplicate entries in config are harmless, so we don't deduplicate them.
+    // This follows YAGNI - removing complexity we don't need.
+
+    #[test]
+    fn test_config_load_accepts_duplicate_unset() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let monitors_path = dir.path().join("monitors.yaml");
+        let profiles_path = dir.path().join("config.yaml");
+
+        std::fs::write(
+            &monitors_path,
+            r#"
+monitors:
+  main:
+    width: 1920
+    height: 1080
+    refreshRate: 60
+    primary: true
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            &profiles_path,
+            r#"
+profiles:
+  test:
+    unset:
+      - SDL_VIDEODRIVER
+      - DXVK_HDR
+      - SDL_VIDEODRIVER
+"#,
+        )
+        .unwrap();
+
+        // Config should load successfully even with duplicates
+        let config = Config::load(&monitors_path, &profiles_path).unwrap();
+        let profile = config.resolve_profile("test").unwrap();
+
+        // Duplicates are preserved (env_remove is idempotent, so this is harmless)
+        assert_eq!(profile.unset_vars.len(), 3);
+        assert!(profile.unset_vars.contains(&"SDL_VIDEODRIVER".to_string()));
+        assert!(profile.unset_vars.contains(&"DXVK_HDR".to_string()));
+    }
+
+    #[test]
+    fn test_config_load_rejects_invalid_env_name() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let monitors_path = dir.path().join("monitors.yaml");
+        let profiles_path = dir.path().join("config.yaml");
+
+        std::fs::write(
+            &monitors_path,
+            r#"
+monitors:
+  main:
+    width: 1920
+    height: 1080
+    refreshRate: 60
+    primary: true
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            &profiles_path,
+            r#"
+profiles:
+  test:
+    environment:
+      VALID_VAR: "1"
+      "INVALID=VAR": "2"
+"#,
+        )
+        .unwrap();
+
+        let result = Config::load(&monitors_path, &profiles_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid environment variable"));
+    }
+
+    #[test]
+    fn test_config_load_rejects_invalid_unset_name() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let monitors_path = dir.path().join("monitors.yaml");
+        let profiles_path = dir.path().join("config.yaml");
+
+        std::fs::write(
+            &monitors_path,
+            r#"
+monitors:
+  main:
+    width: 1920
+    height: 1080
+    refreshRate: 60
+    primary: true
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            &profiles_path,
+            r#"
+profiles:
+  test:
+    unset:
+      - ""
+"#,
+        )
+        .unwrap();
+
+        let result = Config::load(&monitors_path, &profiles_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid environment variable"));
     }
 }

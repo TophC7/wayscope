@@ -453,7 +453,6 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
- "thiserror",
 ]
 
 [[package]]

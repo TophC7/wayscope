@@ -17,7 +17,7 @@ const BASE_ENV: &[(&str, &str)] = &[
     ("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1"),
     ("DISABLE_LAYER_NV_OPTIMUS_1", "1"),
     ("GAMESCOPE_WAYLAND_DISPLAY", "gamescope-0"),
-    ("PROTON_ADD_CONFIG", "sdlinput,wayland"),
+    ("PROTON_ADD_CONFIG", "sdlinput,wayland,hdr"),
     ("PROTON_ENABLE_WAYLAND", "1"),
     ("RADV_PERFTEST", "aco"),
     ("SDL_VIDEODRIVER", "wayland"),
@@ -38,10 +38,18 @@ pub struct ResolvedProfile {
     pub options: HashMap<String, OptionValue>,
     /// Profile-specific environment variables (merged with base env at runtime).
     pub user_env: HashMap<String, String>,
+    /// Environment variable names to unset (removes inherited or base variables).
+    pub unset_vars: Vec<String>,
 }
 
 impl ResolvedProfile {
-    /// Builds the complete environment: base vars + user vars + conditional HDR/WSI vars.
+    /// Builds the complete environment: base vars + user vars + conditional HDR/WSI vars - unset vars.
+    ///
+    /// Environment variables are applied in this order:
+    /// 1. Base environment variables (BASE_ENV constants)
+    /// 2. User-defined environment from profile
+    /// 3. Conditional HDR/WSI environment variables
+    /// 4. Unset variables (removed from final environment)
     pub fn environment(&self) -> Vec<(String, String)> {
         let mut env: HashMap<String, String> = BASE_ENV
             .iter()
@@ -58,6 +66,11 @@ impl ResolvedProfile {
             env.insert("DXVK_HDR".to_string(), "1".to_string());
             env.insert("ENABLE_HDR_WSI".to_string(), "1".to_string());
             env.insert("PROTON_ENABLE_HDR".to_string(), "1".to_string());
+        }
+
+        // Apply unset variables (remove specified variables from environment)
+        for var_name in &self.unset_vars {
+            env.remove(var_name);
         }
 
         let mut sorted: Vec<_> = env.into_iter().collect();
@@ -95,6 +108,7 @@ mod tests {
             use_wsi,
             options,
             user_env: HashMap::new(),
+            unset_vars: Vec::new(),
         }
     }
 
@@ -153,5 +167,66 @@ mod tests {
     fn test_hdr_workaround_not_needed_no_hdr() {
         let profile = mock_profile(false, true, "wayland");
         assert!(!profile.needs_hdr_workaround());
+    }
+
+    #[test]
+    fn test_unset_basic_variable() {
+        let mut profile = mock_profile(false, false, "sdl");
+        profile
+            .user_env
+            .insert("CUSTOM_VAR".to_string(), "value".to_string());
+        profile.unset_vars = vec!["CUSTOM_VAR".to_string()];
+
+        let env = profile.environment();
+        let env_map: HashMap<_, _> = env.into_iter().collect();
+        assert!(!env_map.contains_key("CUSTOM_VAR"));
+    }
+
+    #[test]
+    fn test_unset_nonexistent_variable() {
+        let mut profile = mock_profile(false, false, "sdl");
+        profile.unset_vars = vec!["NONEXISTENT".to_string()];
+
+        // Should not panic and still has base environment
+        let env = profile.environment();
+        let env_map: HashMap<_, _> = env.into_iter().collect();
+        assert!(!env_map.is_empty());
+        assert!(env_map.contains_key("AMD_VULKAN_ICD"));
+    }
+
+    #[test]
+    fn test_unset_overrides_user_env() {
+        let mut profile = mock_profile(false, false, "sdl");
+        profile
+            .user_env
+            .insert("VAR".to_string(), "value".to_string());
+        profile.unset_vars = vec!["VAR".to_string()];
+
+        let env = profile.environment();
+        let env_map: HashMap<_, _> = env.into_iter().collect();
+        assert!(!env_map.contains_key("VAR"));
+    }
+
+    #[test]
+    fn test_unset_base_environment() {
+        let mut profile = mock_profile(false, false, "sdl");
+        profile.unset_vars = vec!["SDL_VIDEODRIVER".to_string()];
+
+        let env = profile.environment();
+        let env_map: HashMap<_, _> = env.into_iter().collect();
+        assert!(!env_map.contains_key("SDL_VIDEODRIVER"));
+    }
+
+    #[test]
+    fn test_unset_hdr_environment_variable() {
+        let mut profile = mock_profile(true, true, "sdl");
+        profile.unset_vars = vec!["DXVK_HDR".to_string(), "PROTON_ENABLE_HDR".to_string()];
+
+        let env = profile.environment();
+        let env_map: HashMap<_, _> = env.into_iter().collect();
+        assert!(!env_map.contains_key("DXVK_HDR"));
+        assert!(!env_map.contains_key("PROTON_ENABLE_HDR"));
+        // But ENABLE_HDR_WSI should still be there (only those two unset)
+        assert_eq!(env_map.get("ENABLE_HDR_WSI"), Some(&"1".to_string()));
     }
 }

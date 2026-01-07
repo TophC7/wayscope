@@ -82,7 +82,7 @@ let
   profilesConfig = {
     profiles = lib.mapAttrs (
       _: prof:
-      lib.filterAttrs (_: v: v != null && v != { }) {
+      lib.filterAttrs (_: v: v != null && v != { } && v != [ ]) {
         inherit (prof)
           monitor
           useHDR
@@ -93,6 +93,7 @@ let
         binary = if prof.package != null then lib.getExe prof.package else defaultBinary;
         options = if prof.options == { } then null else prof.options;
         environment = if prof.environment == { } then null else prof.environment;
+        unset = if prof.unset == [ ] then null else prof.unset;
       }
     ) cfg.profiles;
   };
@@ -279,6 +280,16 @@ in
               };
               description = "Additional environment variables for games using this profile.";
             };
+
+            unset = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              example = [ "PROTON_ENABLE_WAYLAND" "SDL_VIDEODRIVER" ];
+              description = ''
+                Environment variables to remove (unset) for this profile.
+                These remove variables from both wayscope defaults AND parent process environment.
+              '';
+            };
           };
         }
       );
@@ -299,6 +310,16 @@ in
               nested-height = 1080;
               filter = "fsr";
             };
+          };
+          wayland-only = {
+            useWSI = true;
+            environment = {
+              SDL_VIDEODRIVER = "wayland";
+            };
+            unset = [
+              "PROTON_ENABLE_WAYLAND"
+              "DXVK_HUD"
+            ];
           };
         }
       '';

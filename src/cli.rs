@@ -84,6 +84,16 @@ pub struct RunArgs {
     #[arg(short, long, default_value = "default")]
     pub profile: String,
 
+    /// Skip gamescope wrapper, run command directly
+    ///
+    /// When enabled, the specified command runs directly with profile
+    /// environment variables applied, but WITHOUT the gamescope wrapper.
+    /// Useful for debugging, testing, or running non-game commands in
+    /// a configured environment. Still applies all environment setup
+    /// (RADV, Wayland, HDR vars, WSI, etc.) defined by the profile.
+    #[arg(short = 's', long)]
+    pub skip_gamescope: bool,
+
     /// Command to run inside gamescope
     ///
     /// This is typically a game launcher like 'steam' or 'heroic'.
@@ -184,6 +194,55 @@ mod tests {
         match cli.command {
             Commands::Init { force } => assert!(force),
             _ => panic!("Expected Init command"),
+        }
+    }
+
+    #[test]
+    fn test_run_with_skip_gamescope_short() {
+        let cli = Cli::try_parse_from(["wayscope", "run", "-s", "bash"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(args.skip_gamescope);
+                assert_eq!(args.command, vec!["bash"]);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_run_with_skip_gamescope_long() {
+        let cli = Cli::try_parse_from(["wayscope", "run", "--skip-gamescope", "zsh"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(args.skip_gamescope);
+                assert_eq!(args.command, vec!["zsh"]);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_skip_gamescope_with_profile() {
+        let cli = Cli::try_parse_from(["wayscope", "run", "-p", "hdr", "--skip-gamescope", "env"])
+            .unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.profile, "hdr");
+                assert!(args.skip_gamescope);
+                assert_eq!(args.command, vec!["env"]);
+            }
+            _ => panic!("Expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_skip_gamescope_defaults_to_false() {
+        let cli = Cli::try_parse_from(["wayscope", "run", "bash"]).unwrap();
+        match cli.command {
+            Commands::Run(args) => {
+                assert!(!args.skip_gamescope);
+            }
+            _ => panic!("Expected Run command"),
         }
     }
 }

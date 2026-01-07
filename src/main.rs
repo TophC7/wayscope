@@ -44,6 +44,11 @@ fn run_gamescope(cli: &Cli, args: &cli::RunArgs) -> Result<()> {
     let env = profile.environment();
     output::environment(&env);
 
+    if args.skip_gamescope {
+        output::warn("Skipping gamescope, running command directly with profile environment...");
+        return command::exec_direct_with_env(&args.command, &env, &profile.unset_vars);
+    }
+
     let cmd = command::build(&profile, &args.command);
     output::exec_line(&cmd);
 
@@ -83,6 +88,15 @@ fn show_profile(cli: &Cli, profile_name: &str) -> Result<()> {
     output::section("Environment:");
     for (key, value) in profile.environment() {
         output::key_value(&format!("  {}", key), &value);
+    }
+
+    if !profile.unset_vars.is_empty() {
+        output::section("Unset Variables:");
+        let mut unset = profile.unset_vars.clone();
+        unset.sort();
+        for var in unset {
+            output::key_value("  -", &var);
+        }
     }
 
     Ok(())
