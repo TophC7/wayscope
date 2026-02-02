@@ -263,7 +263,53 @@ wayscope run -p hdr-tonemapped %command% # Steam launch options for a game, NOT 
 
 ### Recommended Steam Setup
 
-For the best experience, create multiple launch options via desktop actions rather than trying to configure individual games. Here's a NixOS Home Manager example:
+There are two main approaches to using wayscope with Steam, each with its own trade-offs:
+
+---
+
+#### Option A: Per-Game Launch Parameters (More Control)
+
+Set up game launch parameters for individual games in Steam the way you normally would, but use wayscope in the launch commands.
+
+**In Steam:** Right-click a game > Properties > Launch Options:
+
+```bash
+wayscope run -p hdr %command%
+```
+
+**Advantages:**
+- Fine-grained control over each game's profile
+- Easy to switch profiles per-game
+- Steam runs normally outside of gamescope
+
+**Disadvantages:**
+- More manual setup for each game
+- No support for `--backend` flag (see Mode 2 above)
+
+---
+
+#### Option B: Launch Steam Through Wayscope (Set and Forget)
+
+Launch Steam itself through wayscope so everything runs inside gamescope from the start.
+
+```bash
+wayscope run -p hdr-tonemapped steam -bigpicture
+```
+
+**Advantages:**
+- One consistent experience for all games
+- Has support for `--backend` flag
+- No need to configure individual game launch options
+
+**Disadvantages:**
+- You must restart Steam to change the profile
+- Steam itself runs inside gamescope, so theres no window navigation
+  - I recommend using Big Picture mode
+- Better suited for users that want a more consistent HDR experience
+
+**NixOS Home Manager Example (Option B):**
+
+Create desktop actions to launch Steam in different modes:
 
 ```nix
 steam = lib.mkDefault {
@@ -298,13 +344,15 @@ steam = lib.mkDefault {
 };
 ```
 
+---
+
 ### HDR TL;DR
 
-- **Want auto-HDR for everything?** Launch Steam itself through wayscope with the SDL/ITM profile
-- **Have a native HDR game?** Use the Wayland profile and set that game's launch options to `wayscope run -p hdr-native %command%`
-- **Why not both?** Use desktop actions to launch Steam in different modes as needed
+- **Want auto-HDR for everything?** Use **Option B** and launch Steam itself through wayscope with the SDL/ITM profile
+- **Have a native HDR game?** Use **Option A** with a Wayland profile: `wayscope run -p hdr-native %command%`
+- **Why not both?** Use desktop actions (Option B) for your default mode, and override specific games with launch options (Option A) when needed
 
-Wayscope detects when it's already inside gamescope and passes through gracefully, so don't worry about launch options conflicting.
+Wayscope detects when it's already running inside gamescope and passes through what it can without re-wrapping. This means you don't need to worry about conflicting launch options. However, this doesn't restart gamescope or reapply settings; it uses the existing instance. Don't expect profile or HDR mode changes to take effect on the fly.
 
 ## License
 
