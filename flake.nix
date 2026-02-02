@@ -107,7 +107,7 @@
             meta = with pkgs.lib; {
               description = "Profile-based gamescope wrapper for gaming on Linux";
               homepage = "https://github.com/tophc7/wayscope";
-              license = licenses.mit;
+              license = licenses.gpl3;
               maintainers = [ "tophc7" ];
               platforms = platforms.linux;
               mainProgram = "wayscope";
