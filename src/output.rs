@@ -42,6 +42,20 @@ pub fn exec_line(cmd: &GamescopeCommand) {
             "DISABLE_HDR_WSI=1".yellow()
         );
     }
+    if !cmd.hoisted_env.is_empty() {
+        // Name the vars only — values can contain secrets/paths and always
+        // appear on the Exec: line below anyway.
+        let names: Vec<&str> = cmd
+            .hoisted_env
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        println!(
+            "{} Hoisting parent env to child (stripping from gamescope): {}",
+            PREFIX.magenta().bold(),
+            names.join(", ").yellow()
+        );
+    }
     println!("{} Exec: {}", PREFIX.cyan().bold(), cmd.display().dimmed());
 }
 
