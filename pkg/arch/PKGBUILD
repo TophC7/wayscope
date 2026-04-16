@@ -1,0 +1,48 @@
+# Maintainer: TophC7 <chris@toph.cc>
+pkgname=wayscope-git
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Profile-based gamescope wrapper for gaming on Linux"
+arch=('x86_64')
+url="https://github.com/TophC7/wayscope"
+license=('GPL-3.0')
+depends=('gcc-libs')
+makedepends=('cargo' 'git')
+optdepends=('gamescope: required for running games through gamescope')
+provides=('wayscope')
+conflicts=('wayscope')
+source=("${pkgname}::git+https://github.com/TophC7/wayscope.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$pkgname"
+    # Use git describe for version, fallback to commit count + short hash
+    git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' ||
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+    cd "$pkgname/rust/wayscope"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname/rust/wayscope"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release --all-features
+}
+
+check() {
+    cd "$pkgname/rust/wayscope"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen --all-features
+}
+
+package() {
+    cd "$pkgname/rust/wayscope"
+    install -Dm755 "target/release/wayscope" "$pkgdir/usr/bin/wayscope"
+    install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
