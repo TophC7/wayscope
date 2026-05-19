@@ -2,16 +2,20 @@
   description = "wayscope - Profile-based gamescope wrapper for gaming on Linux";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Derive nixpkgs from mix-nix for cache coherence.
+    nixpkgs.follows = "mix-nix/nixpkgs";
+
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # Chaotic-nyx for gamescope-git and gamescope-wsi
-    # Users don't need to add this to their flake - wayscope provides it
-    chaotic.url = "github:chaotic-cx/nyx/nyxpkgs-unstable";
+    mix-nix = {
+      # url = "github:tophc7/mix.nix";
+      url = "git+file:///repo/Nix/mix.nix";
+      # Don't override nixpkgs - let mix.nix control it for cache hits.
+    };
   };
 
   outputs =
@@ -20,11 +24,11 @@
       nixpkgs,
       flake-utils,
       rust-overlay,
-      chaotic,
+      mix-nix,
     }:
     # System-agnostic outputs
     {
-      # Home Manager module - pass chaotic through _module.args
+      # Home Manager module - pass mix.nix packages through _module.args
       homeManagerModules = {
         wayscope =
           { pkgs, ... }:
@@ -33,8 +37,8 @@
             _module.args.wayscope = {
               packages = self.packages.${pkgs.system};
               gamescopePackages = {
-                gamescope-git = chaotic.legacyPackages.${pkgs.system}.gamescope_git;
-                gamescope-wsi-git = chaotic.legacyPackages.${pkgs.system}.gamescope-wsi_git;
+                gamescope-git = mix-nix.packages.${pkgs.system}.gamescope-git;
+                gamescope-wsi-git = mix-nix.packages.${pkgs.system}.gamescope-git.wsi;
               };
             };
           };

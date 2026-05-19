@@ -2,8 +2,7 @@
 # Profile-based gamescope wrapper for gaming on Linux
 #
 # Can integrate with mix.nix monitors (config.monitors) or define its own.
-# Provides gamescope-git and gamescope-wsi from chaotic-nyx without requiring
-# users to add chaotic to their flake inputs.
+# Uses gamescope-git and gamescope-wsi from mix.nix when useGit is enabled.
 {
   config,
   lib,
@@ -14,7 +13,7 @@
 let
   cfg = config.programs.wayscope;
 
-  # Gamescope packages from chaotic-nyx (provided by wayscope flake)
+  # Gamescope packages from mix.nix (provided by wayscope flake)
   gamescopePackages =
     if cfg.useGit then
       {
@@ -133,8 +132,8 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Use git versions of gamescope from chaotic-nyx for latest features.
-        When true, uses gamescope_git and gamescope-wsi_git.
+        Use git versions of gamescope from mix.nix for latest features.
+        When true, uses gamescope-git and gamescope-git.wsi.
         When false, uses stable gamescope from nixpkgs.
       '';
     };
@@ -239,7 +238,7 @@ in
               example = lib.literalExpression "pkgs.gamescope";
               description = ''
                 Gamescope package to use for this profile.
-                If null (default), uses gamescope from useGit setting (gamescope_git or stable).
+                If null (default), uses gamescope from useGit setting (gamescope-git or stable).
               '';
             };
 
