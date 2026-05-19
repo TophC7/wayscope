@@ -158,10 +158,11 @@
         "nixpkgs-stable": "nixpkgs-stable"
       },
       "locked": {
-        "dirtyRev": "4f3e2aefff0b8a1e99fd651a0aedafe928fce113-dirty",
-        "dirtyShortRev": "4f3e2ae-dirty",
-        "lastModified": 1778675790,
-        "narHash": "sha256-xEEkk71CRvpWLZCR+TzlJ0WRy/zIQQIL9KuUJdffMc8=",
+        "lastModified": 1779200179,
+        "narHash": "sha256-k2NE8YzYci7c1sbFk2wBEFDEcVu+aJ7akrSG97O2CXU=",
+        "ref": "refs/heads/main",
+        "rev": "8c6ccb77532e3657a8bcf7dbed59713cfb4621e9",
+        "revCount": 123,
         "type": "git",
         "url": "file:///repo/Nix/mix.nix"
       },
