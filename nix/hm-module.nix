@@ -2,7 +2,6 @@
 # Profile-based gamescope wrapper for gaming on Linux
 #
 # Can integrate with mix.nix monitors (config.monitors) or define its own.
-# Uses gamescope-git and gamescope-wsi from mix.nix when useGit is enabled.
 {
   config,
   lib,
@@ -13,21 +12,7 @@
 let
   cfg = config.programs.wayscope;
 
-  # Gamescope packages from mix.nix (provided by wayscope flake)
-  gamescopePackages =
-    if cfg.useGit then
-      {
-        gamescope = wayscope.gamescopePackages.gamescope-git;
-        gamescope-wsi = wayscope.gamescopePackages.gamescope-wsi-git;
-      }
-    else
-      {
-        gamescope = pkgs.gamescope;
-        gamescope-wsi = pkgs.gamescope-wsi or null;
-      };
-
-  # Binary path based on useGit setting
-  defaultBinary = lib.getExe gamescopePackages.gamescope;
+  defaultBinary = lib.getExe cfg.gamescope.package;
 
   # Check if mix.nix monitors are available
   hasSystemMonitors = config ? monitors && config.monitors != [ ];
@@ -128,14 +113,23 @@ in
       description = "The wayscope package to use.";
     };
 
-    useGit = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = ''
-        Use git versions of gamescope from mix.nix for latest features.
-        When true, uses gamescope-git and gamescope-git.wsi.
-        When false, uses stable gamescope from nixpkgs.
-      '';
+    gamescope = {
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.gamescope;
+        defaultText = lib.literalExpression "pkgs.gamescope";
+        description = ''
+          Gamescope compositor package. Select custom or git builds from the
+          same package set as the host graphics stack.
+        '';
+      };
+
+      wsiPackage = lib.mkOption {
+        type = lib.types.nullOr lib.types.package;
+        default = pkgs.gamescope-wsi or null;
+        defaultText = lib.literalExpression "pkgs.gamescope-wsi or null";
+        description = "Gamescope WSI layer package, or null to install none.";
+      };
     };
 
     # =========================================================================
@@ -238,7 +232,7 @@ in
               example = lib.literalExpression "pkgs.gamescope";
               description = ''
                 Gamescope package to use for this profile.
-                If null (default), uses gamescope from useGit setting (gamescope-git or stable).
+                If null (default), uses programs.wayscope.gamescope.package.
               '';
             };
 
@@ -405,9 +399,9 @@ in
     home.packages =
       [
         cfg.package
-        gamescopePackages.gamescope
+        cfg.gamescope.package
       ]
-      ++ lib.optional (gamescopePackages.gamescope-wsi != null) gamescopePackages.gamescope-wsi
+      ++ lib.optional (cfg.gamescope.wsiPackage != null) cfg.gamescope.wsiPackage
       ++ lib.mapAttrsToList (_: w: w.wrappedPackage) (lib.filterAttrs (_: w: w.enable) cfg.wrappers);
 
     # Generate config files

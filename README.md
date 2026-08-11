@@ -178,6 +178,19 @@ Then configure profiles and wrappers:
 }
 ```
 
+Wayscope defaults to `pkgs.gamescope` and `pkgs.gamescope-wsi`. Select git or
+custom builds explicitly from the consumer's package set:
+
+```nix
+programs.wayscope.gamescope = {
+  package = pkgs.gamescope-git;
+  wsiPackage = pkgs.gamescope-git.wsi;
+};
+```
+
+The overlay providing those packages should build them from the same `pkgs` as
+the host graphics stack. This keeps Gamescope, Mesa/RADV, and glibc compatible.
+
 ### play.nix
 
 Wayscope started as `gamescoperun` inside [play.nix](https://github.com/TophC7/play.nix), a NixOS flake I use for my own gaming setup. If you want Steam with Proton-CachyOS, Gamemode, ananicy, LACT for AMD GPUs, etc. already wired up, it might save you some time.
