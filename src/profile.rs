@@ -17,9 +17,14 @@ use std::collections::HashMap;
 
 use crate::config::OptionValue;
 
-/// Wayland socket name gamescope serves on. wayscope exports it for gamescope's
-/// children and reads it back to detect that it is running nested.
+/// Wayland socket name exported by gamescope to its children.
 pub const GAMESCOPE_DISPLAY_VAR: &str = "GAMESCOPE_WAYLAND_DISPLAY";
+
+/// Legacy Vulkan HDR layer switch. Modern Gamescope on Mesa's native HDR WSI
+/// must not inherit this unless a profile deliberately sets it.
+const LEGACY_HDR_WSI_VAR: &str = "ENABLE_HDR_WSI";
+const ENABLE_GAMESCOPE_WSI_VAR: &str = "ENABLE_GAMESCOPE_WSI";
+const DISABLE_GAMESCOPE_WSI_VAR: &str = "DISABLE_GAMESCOPE_WSI";
 
 const BASE_ENV: &[(&str, &str)] = &[
     ("AMD_VULKAN_ICD", "RADV"),
@@ -80,10 +85,12 @@ pub enum LaunchMode {
 /// what to re-export to the grandchild through an `env K=V` prefix.
 #[derive(Debug, Clone)]
 pub struct ResolvedEnvironment {
-    /// Variables to set on the child, sorted by name.
+    /// Variables applied to the process wayscope launches, sorted by name.
     pub set: Vec<(String, String)>,
-    /// Variable names to remove from the inherited environment.
+    /// Variable names removed from the inherited environment.
     pub unset: Vec<String>,
+    /// Variables applied only after gamescope, directly to its child.
+    pub child: Vec<(String, String)>,
     /// Variables captured from wayscope's own env, to be re-exported past
     /// gamescope. Always empty in [`LaunchMode::Direct`].
     pub hoisted: Vec<(String, String)>,
@@ -114,18 +121,17 @@ impl ResolvedProfile {
     /// Variables are layered in this order:
     /// 1. [`BASE_ENV`] constants
     /// 2. User-defined environment from the profile
-    /// 3. Conditional HDR/WSI variables
+    /// 3. Conditional HDR variables
     /// 4. The profile's `unset` list (removed from the final set)
     ///
-    /// In [`LaunchMode::Gamescope`], [`HOIST_ENV`] vars present in wayscope's
-    /// own environment are captured into `hoisted` and added to `unset` so the
-    /// compositor never sees them. In [`LaunchMode::Direct`] there is no
-    /// compositor to protect, so nothing is hoisted and the gamescope socket
-    /// name is dropped rather than advertised for a socket that does not exist.
+    /// [`LaunchMode::Gamescope`] also resolves child-only WSI state. Keeping it
+    /// past the `gamescope --` boundary avoids activating Gamescope's implicit
+    /// Vulkan layer in the compositor itself. Both enable and disable switches
+    /// are explicit so profile intent overrides inherited state and Gamescope's
+    /// own nested-child default.
     pub fn resolve_environment(&self, mode: LaunchMode) -> ResolvedEnvironment {
-        // +4 headroom for the conditional WSI/HDR entries below.
         let mut env: HashMap<String, String> =
-            HashMap::with_capacity(BASE_ENV.len() + self.user_env.len() + 4);
+            HashMap::with_capacity(BASE_ENV.len() + self.user_env.len() + 2);
         env.extend(
             BASE_ENV
                 .iter()
@@ -133,19 +139,39 @@ impl ResolvedProfile {
         );
         env.extend(self.user_env.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-        if self.use_wsi {
-            env.insert("ENABLE_GAMESCOPE_WSI".to_string(), "1".to_string());
-        }
-
         if self.use_hdr {
             env.insert("DXVK_HDR".to_string(), "1".to_string());
-            env.insert("ENABLE_HDR_WSI".to_string(), "1".to_string());
             env.insert("PROTON_ENABLE_HDR".to_string(), "1".to_string());
         }
 
         let mut unset = self.unset_vars.clone();
-        let hoisted = match mode {
+        let (child, hoisted) = match mode {
             LaunchMode::Gamescope => {
+                if !self.user_env.contains_key(LEGACY_HDR_WSI_VAR)
+                    && !unset.iter().any(|name| name == LEGACY_HDR_WSI_VAR)
+                {
+                    unset.push(LEGACY_HDR_WSI_VAR.to_string());
+                }
+
+                for name in [ENABLE_GAMESCOPE_WSI_VAR, DISABLE_GAMESCOPE_WSI_VAR] {
+                    if !unset.iter().any(|entry| entry == name) {
+                        unset.push(name.to_string());
+                    }
+                }
+
+                let wsi_enabled = if self.use_wsi { "1" } else { "0" };
+                let wsi_disabled = if self.use_wsi { "0" } else { "1" };
+                let child = vec![
+                    (
+                        DISABLE_GAMESCOPE_WSI_VAR.to_string(),
+                        wsi_disabled.to_string(),
+                    ),
+                    (
+                        ENABLE_GAMESCOPE_WSI_VAR.to_string(),
+                        wsi_enabled.to_string(),
+                    ),
+                ];
+
                 // Reading the parent env happens here, once, before anything is
                 // handed to exec(); the values travel in this struct.
                 let hoisted: Vec<(String, String)> = HOIST_ENV
@@ -158,11 +184,11 @@ impl ResolvedProfile {
                         unset.push(name.clone());
                     }
                 }
-                hoisted
+                (child, hoisted)
             }
             LaunchMode::Direct => {
                 env.remove(GAMESCOPE_DISPLAY_VAR);
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         };
 
@@ -176,6 +202,7 @@ impl ResolvedProfile {
         ResolvedEnvironment {
             set,
             unset,
+            child,
             hoisted,
         }
     }
@@ -185,16 +212,6 @@ impl ResolvedProfile {
         let mut opts: Vec<_> = self.options.iter().collect();
         opts.sort_by(|a, b| a.0.cmp(b.0));
         opts
-    }
-
-    /// Wayland backend + WSI + HDR requires DISABLE_HDR_WSI=1 on the child process.
-    pub fn needs_hdr_workaround(&self) -> bool {
-        // `matches!` with a guard: pattern-match the typed variant, then compare.
-        // A non-string `backend` value is a clean mismatch rather than being
-        // stringified into an accidental match.
-        matches!(self.options.get("backend"), Some(OptionValue::String(b)) if b == "wayland")
-            && self.use_wsi
-            && self.use_hdr
     }
 }
 
@@ -245,7 +262,7 @@ mod tests {
         let env_map = env_map(&profile);
 
         assert_eq!(env_map.get("DXVK_HDR"), Some(&"1".to_string()));
-        assert_eq!(env_map.get("ENABLE_HDR_WSI"), Some(&"1".to_string()));
+        assert!(!env_map.contains_key("ENABLE_HDR_WSI"));
         assert_eq!(env_map.get("PROTON_ENABLE_HDR"), Some(&"1".to_string()));
     }
 
@@ -258,29 +275,55 @@ mod tests {
     }
 
     #[test]
-    fn test_wsi_environment() {
+    fn test_wsi_environment_is_child_only() {
         let profile = mock_profile(false, true, "sdl");
-        let env_map = env_map(&profile);
+        let env = profile.resolve_environment(LaunchMode::Gamescope);
 
-        assert_eq!(env_map.get("ENABLE_GAMESCOPE_WSI"), Some(&"1".to_string()));
+        assert!(!env
+            .set
+            .iter()
+            .any(|(name, _)| name == "ENABLE_GAMESCOPE_WSI"));
+        assert!(env
+            .child
+            .contains(&("ENABLE_GAMESCOPE_WSI".to_string(), "1".to_string())));
+        assert!(env
+            .child
+            .contains(&("DISABLE_GAMESCOPE_WSI".to_string(), "0".to_string())));
+        assert!(env.unset.contains(&ENABLE_GAMESCOPE_WSI_VAR.to_string()));
+        assert!(env.unset.contains(&DISABLE_GAMESCOPE_WSI_VAR.to_string()));
     }
 
     #[test]
-    fn test_hdr_workaround_needed() {
+    fn test_wsi_can_be_explicitly_disabled_for_child() {
+        let profile = mock_profile(false, false, "wayland");
+        let env = profile.resolve_environment(LaunchMode::Gamescope);
+
+        assert!(env
+            .child
+            .contains(&("ENABLE_GAMESCOPE_WSI".to_string(), "0".to_string())));
+        assert!(env
+            .child
+            .contains(&("DISABLE_GAMESCOPE_WSI".to_string(), "1".to_string())));
+    }
+
+    #[test]
+    fn test_direct_mode_has_no_gamescope_wsi_environment() {
+        let profile = mock_profile(false, true, "sdl");
+        let env = profile.resolve_environment(LaunchMode::Direct);
+
+        assert!(env.child.is_empty());
+        assert!(!env
+            .set
+            .iter()
+            .any(|(name, _)| name.contains("GAMESCOPE_WSI")));
+    }
+
+    #[test]
+    fn test_gamescope_mode_unsets_inherited_legacy_hdr_layer() {
         let profile = mock_profile(true, true, "wayland");
-        assert!(profile.needs_hdr_workaround());
-    }
+        let env = profile.resolve_environment(LaunchMode::Gamescope);
 
-    #[test]
-    fn test_hdr_workaround_not_needed_sdl() {
-        let profile = mock_profile(true, true, "sdl");
-        assert!(!profile.needs_hdr_workaround());
-    }
-
-    #[test]
-    fn test_hdr_workaround_not_needed_no_hdr() {
-        let profile = mock_profile(false, true, "wayland");
-        assert!(!profile.needs_hdr_workaround());
+        assert!(env.unset.contains(&LEGACY_HDR_WSI_VAR.to_string()));
     }
 
     #[test]
@@ -348,7 +391,6 @@ mod tests {
         let env_map = env_map(&profile);
         assert!(!env_map.contains_key("DXVK_HDR"));
         assert!(!env_map.contains_key("PROTON_ENABLE_HDR"));
-        // But ENABLE_HDR_WSI should still be there (only those two unset)
-        assert_eq!(env_map.get("ENABLE_HDR_WSI"), Some(&"1".to_string()));
+        assert!(!env_map.contains_key("ENABLE_HDR_WSI"));
     }
 }

@@ -290,6 +290,16 @@ impl Config {
             // Validate environment variable names (both set and unset)
             validate_env_var_names(name, profile.environment.keys(), &profile.unset)?;
 
+            for reserved in ["useHDR", "useWSI"] {
+                if profile.options.contains_key(reserved) {
+                    bail!(
+                        "Profile '{}': '{}' is a profile setting and must be placed beside 'options'",
+                        name,
+                        reserved
+                    );
+                }
+            }
+
             // Validate monitor reference exists
             if let Some(ref mon_name) = profile.monitor {
                 if !monitors.monitors.contains_key(mon_name) {
@@ -652,6 +662,43 @@ profiles:
         assert_eq!(profile.unset_vars.len(), 3);
         assert!(profile.unset_vars.contains(&"SDL_VIDEODRIVER".to_string()));
         assert!(profile.unset_vars.contains(&"DXVK_HDR".to_string()));
+    }
+
+    #[test]
+    fn test_config_load_rejects_profile_setting_inside_options() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let monitors_path = dir.path().join("monitors.yaml");
+        let profiles_path = dir.path().join("config.yaml");
+
+        std::fs::write(
+            &monitors_path,
+            r#"
+monitors:
+  main:
+    width: 1920
+    height: 1080
+    refreshRate: 60
+    primary: true
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &profiles_path,
+            r#"
+profiles:
+  test:
+    options:
+      useWSI: true
+"#,
+        )
+        .unwrap();
+
+        let error = Config::load(&monitors_path, &profiles_path).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must be placed beside 'options'"));
     }
 
     #[test]

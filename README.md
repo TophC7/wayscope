@@ -15,11 +15,11 @@
 Gamescope can be a guessing game and insanely frustrating to use; variables, CLI flags, and workarounds. And when you finally figure out the commands you have to apply them in too many places and you better not forget them. Wayscope is a tool that helps with this.
 
 - **Environment setup** - Configures RADV, Wayland, Proton, and SDL variables automatically
-- **HDR configuration** - Sets `DXVK_HDR`, `ENABLE_HDR_WSI`, `PROTON_ENABLE_HDR` and the required CLI flags
-- **HDR workaround** - Automatically applies `DISABLE_HDR_WSI=1` to child processes when using Wayland + WSI + HDR together (a weird wayland quirk)
+- **HDR configuration** - Sets `DXVK_HDR`, `PROTON_ENABLE_HDR`, and forces Gamescope HDR support/output
+- **Modern HDR WSI** - Keeps the obsolete `ENABLE_HDR_WSI` Vulkan shim out of Gamescope unless explicitly configured
 - **VRR/Adaptive sync** - Enables `--adaptive-sync` based on your monitor's capabilities
 - **Resolution & refresh** - Derives `--output-width`, `--output-height`, `--nested-refresh` from your monitor config
-- **WSI layer** - Manages `ENABLE_GAMESCOPE_WSI` for proper Vulkan integration
+- **WSI layer** - Applies explicit child-only enable/disable state without loading the layer into Gamescope itself
 - **Profile switching** - Easily swap between HDR, SDR, performance, etc configs
 - **Skip gamescope** - Use `--skip-gamescope` to apply profile environment setup without the gamescope wrapper
 - **Unset variables** - Remove inherited environment variables per-profile for fine-grained control
@@ -73,6 +73,10 @@ profiles:
 ```
 
 Profile values override monitor defaults. Run `wayscope init` to create a default configuration with all available options.
+
+`useWSI` is a profile setting, not a Gamescope command-line option. Keep it beside
+`options`. `true` enables the implicit Vulkan layer only for Gamescope's child;
+`false` explicitly defeats Gamescope's upstream nested-child auto-enable.
 
 ## Commands
 
@@ -201,7 +205,7 @@ Wayscope started as `gamescoperun` inside [play.nix](https://github.com/TophC7/p
 
 Use the `--skip-gamescope` flag (short form: `-s`) to apply profile environment variables without wrapping your command in gamescope. This is useful for games that run well/better without gamescope but still need some environment setup.
 
-All environment variables from the profile are applied, including base variables (RADV, Wayland setup, etc.) and any HDR/WSI configuration.
+Process environment variables from the profile are applied, including base RADV, Wayland, and HDR variables. Gamescope-only WSI state is intentionally omitted.
 
 ### Remove Variables with `unset`
 
@@ -247,8 +251,9 @@ profiles:
       backend: wayland
 ```
 
-- Wayscope automatically disables WSI HDR for child processes (`DISABLE_HDR_WSI=1`) so native HDR games can output HDR directly
-- **Do NOT use `hdr-itm-enabled: true`** with this mode—it causes a dark/black screen
+- Wayscope enables Gamescope's WSI layer only for the nested child
+- Modern Mesa provides native Vulkan HDR WSI; `ENABLE_HDR_WSI=1` must stay unset
+- Wayscope forces HDR support and HDR10 PQ output because Gamescope's nested detection is unreliable
 - Best for games with native HDR support
 
 #### Mode 2: Tone-Mapped HDR (SDL Backend + ITM)
@@ -365,7 +370,7 @@ steam = lib.mkDefault {
 - **Have a native HDR game?** Use **Option A** with a Wayland profile: `wayscope run -p hdr-native %command%`
 - **Why not both?** Use desktop actions (Option B) for your default mode, and override specific games with launch options (Option A) when needed
 
-Wayscope detects when it's already running inside gamescope and passes through what it can without re-wrapping. This means you don't need to worry about conflicting launch options. However, this doesn't restart gamescope or reapply settings; it uses the existing instance. Don't expect profile or HDR mode changes to take effect on the fly.
+Wayscope detects when it is already inside Gamescope and runs the command directly without re-wrapping or reapplying a profile. Existing Gamescope, WSI, and HDR state remains authoritative.
 
 ## License
 

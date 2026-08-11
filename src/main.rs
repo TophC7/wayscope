@@ -99,6 +99,11 @@ fn show_profile(cli: &Cli, profile_name: &str) -> Result<()> {
     output::section("Environment:");
     output::environment_listing(&env.set);
 
+    if !env.child.is_empty() {
+        output::section("Child-only Environment:");
+        output::environment_listing(&env.child);
+    }
+
     if !env.hoisted.is_empty() {
         output::section("Hoisted To Child (stripped from gamescope):");
         output::environment_listing(&env.hoisted);

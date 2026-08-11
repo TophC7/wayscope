@@ -245,7 +245,10 @@ in
             useWSI = lib.mkOption {
               type = lib.types.nullOr lib.types.bool;
               default = null;
-              description = "Enable Gamescope WSI layer. Defaults to true.";
+              description = ''
+                Control the Gamescope WSI Vulkan layer for the nested child.
+                Defaults to true; false explicitly disables upstream auto-enable.
+              '';
             };
 
             options = lib.mkOption {
@@ -427,6 +430,12 @@ in
           message = "programs.wayscope.monitors: Exactly one monitor must have 'primary = true'.";
         }
       ]
+      # Keep profile settings out of the free-form Gamescope CLI option map.
+      ++ lib.mapAttrsToList (name: prof: {
+        assertion =
+          !(builtins.hasAttr "useHDR" prof.options) && !(builtins.hasAttr "useWSI" prof.options);
+        message = "programs.wayscope.profiles.${name}: useHDR/useWSI belong beside options, not inside it.";
+      }) cfg.profiles
       # Ensure wrappers have either command or package
       ++ lib.mapAttrsToList (name: w: {
         assertion = !w.enable || (w.command != null || w.package != null);

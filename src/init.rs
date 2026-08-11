@@ -72,7 +72,7 @@ profiles:
     # HDR/WSI settings
     # If omitted, useHDR defaults to monitor's hdr capability
     # useHDR: true         # Enable HDR output (overrides monitor.hdr)
-    useWSI: true           # Enable Gamescope WSI layer
+    useWSI: true           # Control WSI layer for Gamescope's nested child
 
     # Gamescope command-line options
     # These override the defaults derived from your monitor config

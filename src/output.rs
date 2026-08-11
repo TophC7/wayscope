@@ -49,13 +49,6 @@ pub fn environment_listing(env: &[(String, String)]) {
 }
 
 pub fn exec_line(cmd: &GamescopeCommand) {
-    if cmd.needs_hdr_workaround() {
-        eprintln!(
-            "{} HDR workaround: {} for child",
-            PREFIX.magenta().bold(),
-            "DISABLE_HDR_WSI=1".yellow()
-        );
-    }
     if !cmd.hoisted_env_names().is_empty() {
         eprintln!(
             "{} Hoisting parent env to child (stripping from gamescope): {}",

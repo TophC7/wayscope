@@ -14,8 +14,9 @@ use anyhow::{Context, Result};
 use crate::config::OptionValue;
 use crate::profile::{ResolvedEnvironment, ResolvedProfile};
 
-/// Flags implied by `useHDR`. Skipped when the profile sets the same option
-/// explicitly, so option merging stays the only place duplicates are resolved.
+/// HDR flags implied by `useHDR`. Wayscope deliberately forces support and
+/// output because nested compositor HDR detection is not reliable enough to
+/// represent an explicit HDR profile request.
 const HDR_FLAGS: &[&str] = &[
     "hdr-enabled",
     "hdr-debug-force-output",
@@ -32,7 +33,6 @@ pub struct GamescopeCommand {
     unset: Vec<String>,
     /// Hoisted names retained for diagnostics; values live only in `argv`.
     hoisted_env_names: Vec<String>,
-    needs_workaround: bool,
 }
 
 impl GamescopeCommand {
@@ -46,11 +46,6 @@ impl GamescopeCommand {
             display.push_str(&shell_escape(arg));
         }
         display
-    }
-
-    /// Whether the child receives the HDR WSI workaround.
-    pub fn needs_hdr_workaround(&self) -> bool {
-        self.needs_workaround
     }
 
     /// Names of parent variables hoisted past gamescope to its child.
@@ -85,24 +80,18 @@ fn shell_escape(arg: &str) -> Cow<'_, str> {
     Cow::Owned(escaped)
 }
 
-/// Builds the child-side env prefix tokens: `["env", "KEY=VAL", ...]`.
-///
-/// Combines the HDR workaround (`DISABLE_HDR_WSI=1` when applicable) with any
-/// hoisted vars. Returns an empty vector when neither applies, so the `env`
-/// token is omitted entirely.
-fn child_env_prefix(needs_workaround: bool, hoisted: &[(String, String)]) -> Vec<String> {
-    if !needs_workaround && hoisted.is_empty() {
+/// Builds child-side env prefix tokens: `["env", "KEY=VAL", ...]`.
+fn child_env_prefix(child: &[(String, String)], hoisted: &[(String, String)]) -> Vec<String> {
+    if child.is_empty() && hoisted.is_empty() {
         return Vec::new();
     }
 
-    let mut out = Vec::with_capacity(hoisted.len() + 2);
+    let mut out = Vec::with_capacity(child.len() + hoisted.len() + 1);
     out.push("env".to_string());
-    if needs_workaround {
-        out.push("DISABLE_HDR_WSI=1".to_string());
-    }
     out.extend(
-        hoisted
+        child
             .iter()
+            .chain(hoisted)
             .map(|(key, value)| format!("{}={}", key, value)),
     );
     out
@@ -113,8 +102,7 @@ pub fn build(
     env: ResolvedEnvironment,
     child_cmd: &[String],
 ) -> GamescopeCommand {
-    let needs_workaround = profile.needs_hdr_workaround();
-    let prefix = child_env_prefix(needs_workaround, &env.hoisted);
+    let prefix = child_env_prefix(&env.child, &env.hoisted);
     let hoisted_env_names = env.hoisted.into_iter().map(|(name, _)| name).collect();
 
     let mut argv =
@@ -130,7 +118,6 @@ pub fn build(
         env: env.set,
         unset: env.unset,
         hoisted_env_names,
-        needs_workaround,
     }
 }
 
@@ -151,11 +138,9 @@ fn append_args(profile: &ResolvedProfile, args: &mut Vec<String>) {
     }
 
     if profile.use_hdr {
-        // A profile that names one of these itself already rendered it above
-        // (or deliberately set it false), so don't emit it twice.
         for flag in HDR_FLAGS
             .iter()
-            .filter(|f| !profile.options.contains_key(**f))
+            .filter(|flag| !profile.options.contains_key(**flag))
         {
             args.push(format!("--{}", flag));
         }
@@ -285,7 +270,6 @@ mod tests {
         assert!(cmd.argv.contains(&"--fullscreen".to_string()));
         assert!(cmd.argv.contains(&"--backend".to_string()));
         assert!(cmd.argv.contains(&"sdl".to_string()));
-        assert!(!cmd.needs_workaround);
     }
 
     #[test]
@@ -333,7 +317,12 @@ mod tests {
             let display = cmd.display();
 
             assert!(display.starts_with("gamescope"));
-            assert!(display.ends_with("-- 'steam client' 'it'\\''s' '$HOME;rm' ''"));
+            assert!(
+                display.ends_with(
+                    "-- env DISABLE_GAMESCOPE_WSI=1 ENABLE_GAMESCOPE_WSI=0 'steam client' 'it'\\''s' '$HOME;rm' ''"
+                ),
+                "unexpected display: {display}"
+            );
         });
     }
 
@@ -353,8 +342,8 @@ mod tests {
                 &["steam".to_string()],
             );
 
-            // With no LD_* in env, only profile-specific unset entries exist.
-            assert_eq!(cmd.unset.len(), 2);
+            // Profile entries plus inherited legacy HDR and parent WSI switches.
+            assert_eq!(cmd.unset.len(), 5);
             assert!(cmd.unset.contains(&"SDL_VIDEODRIVER".to_string()));
             assert!(cmd.unset.contains(&"DXVK_HDR".to_string()));
         });
@@ -370,7 +359,14 @@ mod tests {
                 &["steam".to_string()],
             );
 
-            assert!(cmd.unset.is_empty());
+            assert_eq!(
+                cmd.unset,
+                [
+                    "ENABLE_HDR_WSI",
+                    "ENABLE_GAMESCOPE_WSI",
+                    "DISABLE_GAMESCOPE_WSI"
+                ]
+            );
         });
     }
 
@@ -511,16 +507,19 @@ mod tests {
     }
 
     #[test]
-    fn test_child_env_prefix_combines_workaround_and_hoist() {
-        let prefix = child_env_prefix(true, &[("LD_PRELOAD".to_string(), "/over.so".to_string())]);
+    fn test_child_env_prefix_combines_wsi_and_hoist() {
+        let prefix = child_env_prefix(
+            &[("ENABLE_GAMESCOPE_WSI".to_string(), "1".to_string())],
+            &[("LD_PRELOAD".to_string(), "/over.so".to_string())],
+        );
         assert_eq!(prefix[0], "env");
-        assert!(prefix.contains(&"DISABLE_HDR_WSI=1".to_string()));
+        assert!(prefix.contains(&"ENABLE_GAMESCOPE_WSI=1".to_string()));
         assert!(prefix.contains(&"LD_PRELOAD=/over.so".to_string()));
     }
 
     #[test]
     fn test_child_env_prefix_empty_when_nothing_to_inject() {
-        assert!(child_env_prefix(false, &[]).is_empty());
+        assert!(child_env_prefix(&[], &[]).is_empty());
     }
 
     // ========================================================================

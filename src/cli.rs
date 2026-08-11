@@ -106,8 +106,8 @@ pub struct RunArgs {
     /// When enabled, the specified command runs directly with profile
     /// environment variables applied, but WITHOUT the gamescope wrapper.
     /// Useful for debugging, testing, or running non-game commands in
-    /// a configured environment. Still applies all environment setup
-    /// (RADV, Wayland, HDR vars, WSI, etc.) defined by the profile.
+    /// a configured environment. Still applies process environment setup
+    /// (RADV, Wayland, HDR, etc.), but not Gamescope-only WSI state.
     #[arg(short = 's', long)]
     pub skip_gamescope: bool,
 
