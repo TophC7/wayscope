@@ -1,10 +1,11 @@
 //! Command-line interface definitions for wayscope.
 //!
 //! Uses clap's derive macros for declarative argument parsing.
-//! The CLI supports three main commands: run (default), list, and show.
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+use crate::config::{MonitorsConfig, ProfilesConfig};
 
 /// Profile-based gamescope wrapper for gaming on Linux.
 ///
@@ -29,6 +30,22 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+}
+
+impl Cli {
+    /// Monitors config path: CLI override, else the default config-dir location.
+    pub fn monitors_path(&self) -> PathBuf {
+        self.monitors
+            .clone()
+            .unwrap_or_else(MonitorsConfig::default_path)
+    }
+
+    /// Profiles config path: CLI override, else the default config-dir location.
+    pub fn profiles_path(&self) -> PathBuf {
+        self.config
+            .clone()
+            .unwrap_or_else(ProfilesConfig::default_path)
+    }
 }
 
 #[derive(Subcommand)]

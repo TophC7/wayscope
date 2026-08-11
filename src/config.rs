@@ -30,18 +30,6 @@ use crate::profile::ResolvedProfile;
 /// # Returns
 ///
 /// `true` if the name is valid, `false` otherwise
-///
-/// # Examples
-///
-/// ```
-/// assert!(is_valid_env_var_name("MY_VAR"));
-/// assert!(is_valid_env_var_name("_PRIVATE"));
-/// assert!(is_valid_env_var_name("var123"));
-/// assert!(!is_valid_env_var_name(""));        // Empty
-/// assert!(!is_valid_env_var_name("123VAR"));  // Starts with digit
-/// assert!(!is_valid_env_var_name("MY=VAR"));  // Contains =
-/// assert!(!is_valid_env_var_name("MY VAR"));  // Contains space
-/// ```
 fn is_valid_env_var_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
@@ -49,9 +37,7 @@ fn is_valid_env_var_name(name: &str) -> bool {
 
     let mut chars = name.chars();
 
-    // First character must be letter or underscore
-    // Note: Using pattern matching for clarity - this is a Rust idiom
-    // that Python developers should recognize as similar to `if c in 'abc...'`
+    // POSIX: first character must be a letter or underscore.
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
@@ -179,7 +165,7 @@ impl MonitorsConfig {
         self.monitors
             .iter()
             .find(|(_, m)| m.primary)
-            .with_context(|| "No primary monitor. Set 'primary: true' on one monitor.")
+            .context("No primary monitor. Set 'primary: true' on one monitor.")
     }
 }
 
@@ -280,6 +266,14 @@ impl std::fmt::Display for EnvValue {
 // Combined Configuration
 // ============================================================================
 
+/// The handful of resolved values `wayscope list` reports per profile.
+#[derive(Debug, Clone)]
+pub struct ProfileSummary {
+    pub monitor: String,
+    pub use_hdr: bool,
+    pub use_wsi: bool,
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub monitors: MonitorsConfig,
@@ -348,19 +342,21 @@ impl Config {
         })
     }
 
-    pub fn list_profiles(&self) -> Vec<(String, String)> {
+    /// Every profile name paired with its resolution result, sorted by name.
+    ///
+    /// Failures are returned rather than skipped so callers can tell the user
+    /// *why* a configured profile is unusable instead of silently omitting it.
+    pub fn list_profiles(&self) -> Vec<(&String, Result<ProfileSummary>)> {
         self.profiles
             .names()
             .into_iter()
-            .filter_map(|name| {
-                self.resolve_profile(name).ok().map(|p| {
-                    let summary = format!(
-                        "monitor={} HDR={} WSI={}",
-                        p.monitor_name, p.use_hdr, p.use_wsi
-                    );
-                    // p.name is already owned; no need to clone `name` again
-                    (p.name, summary)
-                })
+            .map(|name| {
+                let summary = self.resolve_profile(name).map(|p| ProfileSummary {
+                    monitor: p.monitor_name,
+                    use_hdr: p.use_hdr,
+                    use_wsi: p.use_wsi,
+                });
+                (name, summary)
             })
             .collect()
     }
@@ -529,8 +525,11 @@ monitors:
         assert!(profile.unset_vars.contains(&"CUSTOM".to_string()));
 
         // Verify unset works in environment
-        let env = profile.environment();
-        let env_map: HashMap<_, _> = env.into_iter().collect();
+        let env_map: HashMap<_, _> = profile
+            .resolve_environment(crate::profile::LaunchMode::Gamescope)
+            .set
+            .into_iter()
+            .collect();
         assert!(!env_map.contains_key("SDL_VIDEODRIVER"));
         assert!(!env_map.contains_key("CUSTOM"));
     }
@@ -573,7 +572,7 @@ monitors:
 
     #[test]
     fn test_validate_env_var_names_success() {
-        let env_keys = vec![
+        let env_keys = [
             "VALID_VAR".to_string(),
             "_ANOTHER".to_string(),
             "third123".to_string(),
@@ -586,7 +585,7 @@ monitors:
 
     #[test]
     fn test_validate_env_var_names_invalid_env_key() {
-        let env_keys = vec!["VALID".to_string(), "INVALID=KEY".to_string()];
+        let env_keys = ["VALID".to_string(), "INVALID=KEY".to_string()];
         let unset = vec![];
 
         let result = validate_env_var_names("test-profile", env_keys.iter(), &unset);
@@ -610,10 +609,6 @@ monitors:
     // ========================================================================
     // Integration Tests for Validation During Config Load
     // ========================================================================
-    //
-    // Note: Deduplication tests were removed because env_remove() is idempotent.
-    // Duplicate entries in config are harmless, so we don't deduplicate them.
-    // This follows YAGNI - removing complexity we don't need.
 
     #[test]
     fn test_config_load_accepts_duplicate_unset() {

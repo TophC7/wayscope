@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::cli::{Cli, Commands};
-use crate::config::{Config, MonitorsConfig, ProfilesConfig};
+use crate::config::{Config, MonitorsConfig};
+use crate::profile::{LaunchMode, GAMESCOPE_DISPLAY_VAR};
 
 mod cli;
 mod command;
@@ -30,9 +31,9 @@ fn main() -> Result<()> {
 }
 
 fn run_gamescope(cli: &Cli, args: &cli::RunArgs) -> Result<()> {
-    if std::env::var("GAMESCOPE_WAYLAND_DISPLAY").is_ok() {
+    if std::env::var(GAMESCOPE_DISPLAY_VAR).is_ok() {
         output::warn("Already inside Gamescope, running command directly...");
-        return command::exec_direct(&args.command);
+        return command::exec_direct_with_env(&args.command, &[], &[]);
     }
 
     let config = load_config(cli)?;
@@ -41,15 +42,21 @@ fn run_gamescope(cli: &Cli, args: &cli::RunArgs) -> Result<()> {
         .with_context(|| format!("Failed to resolve profile '{}'", args.profile))?;
 
     output::profile(&profile.name, &profile.monitor_name);
-    let env = profile.environment();
-    output::environment(&env);
+
+    let mode = if args.skip_gamescope {
+        LaunchMode::Direct
+    } else {
+        LaunchMode::Gamescope
+    };
+    let env = profile.resolve_environment(mode);
+    output::environment(&env.set);
 
     if args.skip_gamescope {
         output::warn("Skipping gamescope, running command directly with profile environment...");
-        return command::exec_direct_with_env(&args.command, &env, &profile.unset_vars);
+        return command::exec_direct_with_env(&args.command, &env.set, &env.unset);
     }
 
-    let cmd = command::build(&profile, &args.command);
+    let cmd = command::build(&profile, env, &args.command);
     output::exec_line(&cmd);
 
     command::exec(cmd)
@@ -59,8 +66,11 @@ fn list_profiles(cli: &Cli) -> Result<()> {
     let config = load_config(cli)?;
 
     output::header("Available profiles:");
-    for (name, summary) in config.list_profiles() {
-        output::profile_summary(&name, &summary);
+    for (name, resolved) in config.list_profiles() {
+        match resolved {
+            Ok(summary) => output::profile_summary(name, &summary),
+            Err(err) => output::profile_unresolved(name, &err),
+        }
     }
     Ok(())
 }
@@ -79,20 +89,24 @@ fn show_profile(cli: &Cli, profile_name: &str) -> Result<()> {
     output::key_value("  WSI", &profile.use_wsi.to_string());
 
     output::section("Options:");
-    let mut opts: Vec<_> = profile.options.iter().collect();
-    opts.sort_by(|a, b| a.0.cmp(b.0));
-    for (key, value) in opts {
+    for (key, value) in profile.sorted_options() {
         output::key_value(&format!("  --{}", key), &value.to_string());
     }
 
+    // Report what `run` would actually apply, hoist/strip included.
+    let env = profile.resolve_environment(LaunchMode::Gamescope);
+
     output::section("Environment:");
-    for (key, value) in profile.environment() {
-        output::key_value(&format!("  {}", key), &value);
+    output::environment_listing(&env.set);
+
+    if !env.hoisted.is_empty() {
+        output::section("Hoisted To Child (stripped from gamescope):");
+        output::environment_listing(&env.hoisted);
     }
 
-    if !profile.unset_vars.is_empty() {
+    if !env.unset.is_empty() {
         output::section("Unset Variables:");
-        let mut unset = profile.unset_vars.clone();
+        let mut unset = env.unset;
         unset.sort();
         for var in unset {
             output::key_value("  -", &var);
@@ -103,42 +117,22 @@ fn show_profile(cli: &Cli, profile_name: &str) -> Result<()> {
 }
 
 fn list_monitors(cli: &Cli) -> Result<()> {
-    let path = cli
-        .monitors
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(MonitorsConfig::default_path);
-    let monitors = MonitorsConfig::load(&path)?;
+    let monitors = MonitorsConfig::load(&cli.monitors_path())?;
 
     output::header("Configured monitors:");
 
-    let mut names: Vec<_> = monitors.monitors.keys().collect();
-    names.sort();
+    let mut entries: Vec<_> = monitors.monitors.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
 
-    for name in names {
-        if let Some(mon) = monitors.monitors.get(name) {
-            let primary_marker = if mon.primary { " (primary)" } else { "" };
-            let summary = format!(
-                "{}x{}@{}Hz VRR={} HDR={}{}",
-                mon.width, mon.height, mon.refreshRate, mon.vrr, mon.hdr, primary_marker
-            );
-            output::profile_summary(name, &summary);
-        }
+    for (name, mon) in entries {
+        output::monitor_summary(name, mon);
     }
     Ok(())
 }
 
 fn load_config(cli: &Cli) -> Result<Config> {
-    let monitors_path = cli
-        .monitors
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(MonitorsConfig::default_path);
-    let profiles_path = cli
-        .config
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(ProfilesConfig::default_path);
+    let monitors_path = cli.monitors_path();
+    let profiles_path = cli.profiles_path();
 
     Config::load(&monitors_path, &profiles_path).with_context(|| {
         format!(

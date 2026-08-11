@@ -1,158 +1,141 @@
 //! Gamescope command building and execution.
 //!
-//! Constructs the gamescope command line from a resolved profile,
-//! including all options, HDR flags, and environment variables.
-//! Uses `exec` to replace the current process with gamescope.
+//! Constructs the gamescope command line from a resolved profile and a
+//! [`ResolvedEnvironment`], then `exec`s it, replacing the current process.
+//! The argv is built once and shared by execution and display, so the
+//! `Exec:` line users copy is exactly what runs.
 
+use std::borrow::Cow;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use anyhow::{Context, Result};
 
 use crate::config::OptionValue;
-use crate::profile::ResolvedProfile;
+use crate::profile::{ResolvedEnvironment, ResolvedProfile};
 
-/// Env vars "hoisted" from the parent process: captured from wayscope's own
-/// environment, stripped from gamescope, and re-exported to gamescope's child
-/// (reaper → pressure-vessel → proton → game) via an `env K=V` prefix.
-///
-/// # Why these specifically
-///
-/// Both are injected by Steam's per-game launch-options mechanism and target
-/// the *game* process, not the compositor:
-///
-/// - `LD_PRELOAD` carries `gameoverlayrenderer.so` (Steam overlay + controller
-///   hotplug). Intended to be preloaded into the game so Steam can draw UI
-///   and intercept input. Has no business loading into gamescope itself.
-/// - `LD_LIBRARY_PATH` carries Steam's Ubuntu steam-runtime `pinned_libs_*`.
-///   Intended for the game's Ubuntu-ABI Steam launcher. On NixOS it causes
-///   gamescope's dynamic loader to resolve glibc/Vulkan/Wayland against
-///   mismatched versions — segfault before `main()` (exit 139, no stderr).
-///
-/// # Why this is distro-neutral
-///
-/// On any distro, these vars target the game's process environment; nothing
-/// in gamescope itself needs them. Hoisting is a no-op on non-Steam launches
-/// (the vars aren't set) and a correctness fix on Steam launches (they are).
-/// NixOS users happen to suffer the most visible symptom (segfault), but the
-/// semantics — "these env vars belong to the child, not the compositor" —
-/// hold identically everywhere.
-///
-/// # Profile override
-///
-/// If a profile's `environment` attribute explicitly sets one of these vars,
-/// hoisting is skipped for that name: user intent wins. The profile-set
-/// value is applied to gamescope *and* inherited by the child as normal.
-const HOIST_ENV: &[&str] = &["LD_PRELOAD", "LD_LIBRARY_PATH"];
+/// Flags implied by `useHDR`. Skipped when the profile sets the same option
+/// explicitly, so option merging stays the only place duplicates are resolved.
+const HDR_FLAGS: &[&str] = &[
+    "hdr-enabled",
+    "hdr-debug-force-output",
+    "hdr-debug-force-support",
+];
 
 #[derive(Debug)]
 pub struct GamescopeCommand {
-    pub binary: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-    /// Environment variable names to remove from inherited parent environment.
-    pub unset: Vec<String>,
-    /// Env vars captured from wayscope's own env at build time, to be
-    /// re-exported to gamescope's child via an `env K=V ...` prefix.
-    /// See [`HOIST_ENV`] for rationale.
-    pub hoisted_env: Vec<(String, String)>,
-    pub child: Vec<String>,
-    pub needs_workaround: bool,
+    /// Full argv: binary, gamescope options, `--`, optional `env K=V` prefix,
+    /// then the child command. Single source of truth for exec and display.
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    /// Environment variable names to remove from the inherited parent environment.
+    unset: Vec<String>,
+    /// Hoisted names retained for diagnostics; values live only in `argv`.
+    hoisted_env_names: Vec<String>,
+    needs_workaround: bool,
 }
 
 impl GamescopeCommand {
-    /// Builds the child-side env prefix tokens: `["env", "KEY=VAL", ...]`.
-    ///
-    /// Combines the HDR workaround (`DISABLE_HDR_WSI=1` when applicable) with
-    /// any hoisted vars. Returns an empty vector when neither applies, so
-    /// callers can skip emitting the `env` token entirely.
-    fn child_env_prefix(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if self.needs_workaround {
-            out.push("DISABLE_HDR_WSI=1".to_string());
+    /// Formats shell-escaped argv for display or copying into a POSIX shell.
+    pub fn display(&self) -> String {
+        let mut display = String::new();
+        for (index, arg) in self.argv.iter().enumerate() {
+            if index > 0 {
+                display.push(' ');
+            }
+            display.push_str(&shell_escape(arg));
         }
-        for (k, v) in &self.hoisted_env {
-            out.push(format!("{}={}", k, v));
-        }
-        if out.is_empty() {
-            return out;
-        }
-        // Prepend the literal `env` program; it's what actually applies
-        // the K=V pairs to the child process.
-        out.insert(0, "env".to_string());
-        out
+        display
     }
 
-    /// Formats the command for display (e.g., logging or dry-run output).
-    pub fn display(&self) -> String {
-        // Simple implementation: this runs once per execution, not in a hot path.
-        // Using format! and join is clearer than manual capacity pre-allocation.
-        let args_str = self.args.join(" ");
-        let child_str = self.child.join(" ");
-        let prefix = self.child_env_prefix();
-        let prefix_str = if prefix.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", prefix.join(" "))
-        };
+    /// Whether the child receives the HDR WSI workaround.
+    pub fn needs_hdr_workaround(&self) -> bool {
+        self.needs_workaround
+    }
 
-        format!(
-            "{} {} --{} {}",
-            self.binary, args_str, prefix_str, child_str
-        )
+    /// Names of parent variables hoisted past gamescope to its child.
+    pub fn hoisted_env_names(&self) -> &[String] {
+        &self.hoisted_env_names
     }
 }
 
-pub fn build(profile: &ResolvedProfile, child_cmd: &[String]) -> GamescopeCommand {
-    let mut args = build_args(profile);
-
-    if profile.use_hdr {
-        args.push("--hdr-enabled".to_string());
-        args.push("--hdr-debug-force-output".to_string());
-        args.push("--hdr-debug-force-support".to_string());
+fn shell_escape(arg: &str) -> Cow<'_, str> {
+    if !arg.is_empty()
+        && arg.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'_' | b'@' | b'%' | b'+' | b'=' | b':' | b',' | b'.' | b'/' | b'-'
+                )
+        })
+    {
+        return Cow::Borrowed(arg);
     }
 
-    // Capture hoist candidates from wayscope's own env. Reading happens BEFORE
-    // we hand the Command object to ld.so via exec(), which is what matters:
-    // the values travel with the GamescopeCommand struct, not via inherited
-    // env. See `HOIST_ENV` for why these specific vars.
-    //
-    // Profile-level `environment` overrides hoisting: if the user explicitly
-    // set LD_PRELOAD in their profile, they want it on gamescope (and
-    // inherited by the child). Don't second-guess.
-    let hoisted_env: Vec<(String, String)> = HOIST_ENV
-        .iter()
-        .filter(|name| !profile.user_env.contains_key(**name))
-        .filter_map(|name| std::env::var(name).ok().map(|v| ((*name).to_string(), v)))
-        .collect();
-
-    // Extend the unset list with every var we're hoisting, so gamescope's
-    // process sees none of them. Preserve ordering and avoid duplicates.
-    let mut unset = profile.unset_vars.clone();
-    for (name, _) in &hoisted_env {
-        if !unset.iter().any(|u| u == name) {
-            unset.push(name.clone());
+    let mut escaped = String::with_capacity(arg.len() + 2);
+    escaped.push('\'');
+    for character in arg.chars() {
+        if character == '\'' {
+            escaped.push_str("'\\''");
+        } else {
+            escaped.push(character);
         }
     }
+    escaped.push('\'');
+    Cow::Owned(escaped)
+}
+
+/// Builds the child-side env prefix tokens: `["env", "KEY=VAL", ...]`.
+///
+/// Combines the HDR workaround (`DISABLE_HDR_WSI=1` when applicable) with any
+/// hoisted vars. Returns an empty vector when neither applies, so the `env`
+/// token is omitted entirely.
+fn child_env_prefix(needs_workaround: bool, hoisted: &[(String, String)]) -> Vec<String> {
+    if !needs_workaround && hoisted.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::with_capacity(hoisted.len() + 2);
+    out.push("env".to_string());
+    if needs_workaround {
+        out.push("DISABLE_HDR_WSI=1".to_string());
+    }
+    out.extend(
+        hoisted
+            .iter()
+            .map(|(key, value)| format!("{}={}", key, value)),
+    );
+    out
+}
+
+pub fn build(
+    profile: &ResolvedProfile,
+    env: ResolvedEnvironment,
+    child_cmd: &[String],
+) -> GamescopeCommand {
+    let needs_workaround = profile.needs_hdr_workaround();
+    let prefix = child_env_prefix(needs_workaround, &env.hoisted);
+    let hoisted_env_names = env.hoisted.into_iter().map(|(name, _)| name).collect();
+
+    let mut argv =
+        Vec::with_capacity(profile.options.len() * 2 + prefix.len() + child_cmd.len() + 5);
+    argv.push(profile.binary.clone());
+    append_args(profile, &mut argv);
+    argv.push("--".to_string());
+    argv.extend(prefix);
+    argv.extend_from_slice(child_cmd);
 
     GamescopeCommand {
-        binary: profile.binary.clone(),
-        args,
-        env: profile.environment(),
-        unset,
-        hoisted_env,
-        child: child_cmd.to_vec(),
-        needs_workaround: profile.needs_hdr_workaround(),
+        argv,
+        env: env.set,
+        unset: env.unset,
+        hoisted_env_names,
+        needs_workaround,
     }
 }
 
-fn build_args(profile: &ResolvedProfile) -> Vec<String> {
-    let mut args = Vec::with_capacity(profile.options.len() * 2);
-
-    let mut sorted_opts: Vec<_> = profile.options.iter().collect();
-    sorted_opts.sort_by(|a, b| a.0.cmp(b.0));
-
-    for (key, value) in sorted_opts {
+fn append_args(profile: &ResolvedProfile, args: &mut Vec<String>) {
+    for (key, value) in profile.sorted_options() {
         match value {
             OptionValue::Bool(true) => args.push(format!("--{}", key)),
             OptionValue::Bool(false) => {} // Omit false flags
@@ -167,7 +150,16 @@ fn build_args(profile: &ResolvedProfile) -> Vec<String> {
         }
     }
 
-    args
+    if profile.use_hdr {
+        // A profile that names one of these itself already rendered it above
+        // (or deliberately set it false), so don't emit it twice.
+        for flag in HDR_FLAGS
+            .iter()
+            .filter(|f| !profile.options.contains_key(**f))
+        {
+            args.push(format!("--{}", flag));
+        }
+    }
 }
 
 /// Applies environment variables to a Command, setting specified vars and removing unset ones.
@@ -185,44 +177,18 @@ fn apply_env_to_command(command: &mut Command, env: &[(String, String)], unset: 
 
 /// Replaces the current process with gamescope (does not return on success).
 pub fn exec(cmd: GamescopeCommand) -> Result<()> {
-    let mut command = Command::new(&cmd.binary);
-
+    let mut command = Command::new(&cmd.argv[0]);
     apply_env_to_command(&mut command, &cmd.env, &cmd.unset);
-
-    command.args(&cmd.args);
-    command.arg("--");
-
-    // Child-side env prefix: HDR workaround + hoisted vars (if any).
-    // The `env` utility applies K=V pairs then exec's the rest of argv, so
-    // the game process sees LD_PRELOAD/LD_LIBRARY_PATH even though gamescope
-    // itself was launched with them stripped.
-    let prefix = cmd.child_env_prefix();
-    command.args(&prefix);
-
-    command.args(&cmd.child);
+    command.args(&cmd.argv[1..]);
 
     let err = command.exec();
     Err(err).context("Failed to execute gamescope")
 }
 
-/// Bypass gamescope, run command directly (used when already inside gamescope).
-pub fn exec_direct(child_cmd: &[String]) -> Result<()> {
-    if child_cmd.is_empty() {
-        anyhow::bail!("No command provided");
-    }
-
-    let mut command = Command::new(&child_cmd[0]);
-    command.args(&child_cmd[1..]);
-
-    let err = command.exec();
-    Err(err).context("Failed to execute command")
-}
-
-/// Run command directly with profile environment variables applied.
+/// Runs a command directly, with the given environment applied.
 ///
-/// Used when skipping gamescope (via --skip-gamescope flag) while preserving
-/// all profile environment setup (RADV, Wayland, HDR vars, WSI, etc.).
-/// Environment handling is delegated to `apply_env_to_command`.
+/// Used when gamescope is skipped (`--skip-gamescope`) or when wayscope is
+/// already running inside gamescope; pass empty slices to inherit unchanged.
 pub fn exec_direct_with_env(
     child_cmd: &[String],
     env: &[(String, String)],
@@ -243,6 +209,7 @@ pub fn exec_direct_with_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::LaunchMode;
     use std::collections::HashMap;
 
     /// Creates a mock profile with common defaults. Use builder methods to customize.
@@ -308,12 +275,16 @@ mod tests {
     #[test]
     fn test_build_basic_command() {
         let profile = MockProfile::new().build();
-        let cmd = build(&profile, &["steam".to_string()]);
+        let cmd = build(
+            &profile,
+            profile.resolve_environment(LaunchMode::Gamescope),
+            &["steam".to_string()],
+        );
 
-        assert_eq!(cmd.binary, "gamescope");
-        assert!(cmd.args.contains(&"--fullscreen".to_string()));
-        assert!(cmd.args.contains(&"--backend".to_string()));
-        assert!(cmd.args.contains(&"sdl".to_string()));
+        assert_eq!(cmd.argv[0], "gamescope");
+        assert!(cmd.argv.contains(&"--fullscreen".to_string()));
+        assert!(cmd.argv.contains(&"--backend".to_string()));
+        assert!(cmd.argv.contains(&"sdl".to_string()));
         assert!(!cmd.needs_workaround);
     }
 
@@ -322,43 +293,48 @@ mod tests {
         let profile = MockProfile::new()
             .with_binary("/nix/store/xxx/bin/gamescope")
             .build();
-        let cmd = build(&profile, &["steam".to_string()]);
+        let cmd = build(
+            &profile,
+            profile.resolve_environment(LaunchMode::Gamescope),
+            &["steam".to_string()],
+        );
 
-        assert_eq!(cmd.binary, "/nix/store/xxx/bin/gamescope");
+        assert_eq!(cmd.argv[0], "/nix/store/xxx/bin/gamescope");
     }
 
     #[test]
     fn test_build_with_hdr() {
         let profile = MockProfile::new().with_hdr(true).with_wsi(true).build();
-        let cmd = build(&profile, &["steam".to_string()]);
+        let cmd = build(
+            &profile,
+            profile.resolve_environment(LaunchMode::Gamescope),
+            &["steam".to_string()],
+        );
 
-        assert!(cmd.args.contains(&"--hdr-enabled".to_string()));
-        assert!(cmd.args.contains(&"--hdr-debug-force-output".to_string()));
-        assert!(cmd.args.contains(&"--hdr-debug-force-support".to_string()));
+        assert!(cmd.argv.contains(&"--hdr-enabled".to_string()));
+        assert!(cmd.argv.contains(&"--hdr-debug-force-output".to_string()));
+        assert!(cmd.argv.contains(&"--hdr-debug-force-support".to_string()));
     }
 
     #[test]
-    fn test_display_format() {
+    fn test_display_shell_escapes_argv() {
         with_env_vars(CLEAN_HOIST_ENV, || {
             let profile = MockProfile::new().build();
-            let cmd = build(&profile, &["steam".to_string(), "-gamepadui".to_string()]);
+            let cmd = build(
+                &profile,
+                profile.resolve_environment(LaunchMode::Gamescope),
+                &[
+                    "steam client".to_string(),
+                    "it's".to_string(),
+                    "$HOME;rm".to_string(),
+                    String::new(),
+                ],
+            );
             let display = cmd.display();
 
             assert!(display.starts_with("gamescope"));
-            // With no hoisted env and no HDR workaround, child runs verbatim.
-            assert!(display.contains("-- steam -gamepadui"));
+            assert!(display.ends_with("-- 'steam client' 'it'\\''s' '$HOME;rm' ''"));
         });
-    }
-
-    #[test]
-    fn test_display_no_cloning_overhead() {
-        let profile = MockProfile::new().build();
-        let cmd = build(&profile, &["steam".to_string()]);
-
-        // Call display multiple times - should be efficient
-        let d1 = cmd.display();
-        let d2 = cmd.display();
-        assert_eq!(d1, d2);
     }
 
     // ========================================================================
@@ -371,7 +347,11 @@ mod tests {
             let profile = MockProfile::new()
                 .with_unset(vec!["SDL_VIDEODRIVER".to_string(), "DXVK_HDR".to_string()])
                 .build();
-            let cmd = build(&profile, &["steam".to_string()]);
+            let cmd = build(
+                &profile,
+                profile.resolve_environment(LaunchMode::Gamescope),
+                &["steam".to_string()],
+            );
 
             // With no LD_* in env, only profile-specific unset entries exist.
             assert_eq!(cmd.unset.len(), 2);
@@ -384,27 +364,14 @@ mod tests {
     fn test_build_empty_unset_vars() {
         with_env_vars(CLEAN_HOIST_ENV, || {
             let profile = MockProfile::new().build();
-            let cmd = build(&profile, &["steam".to_string()]);
+            let cmd = build(
+                &profile,
+                profile.resolve_environment(LaunchMode::Gamescope),
+                &["steam".to_string()],
+            );
 
             assert!(cmd.unset.is_empty());
         });
-    }
-
-    #[test]
-    fn test_gamescope_command_struct_has_unset() {
-        // Verify the GamescopeCommand struct properly stores unset vars
-        let cmd = GamescopeCommand {
-            binary: "gamescope".to_string(),
-            args: vec![],
-            env: vec![("KEY".to_string(), "VALUE".to_string())],
-            unset: vec!["REMOVE_ME".to_string()],
-            hoisted_env: vec![],
-            child: vec!["game".to_string()],
-            needs_workaround: false,
-        };
-
-        assert_eq!(cmd.unset.len(), 1);
-        assert_eq!(cmd.unset[0], "REMOVE_ME");
     }
 
     // ========================================================================
@@ -457,12 +424,17 @@ mod tests {
             ],
             || {
                 let profile = MockProfile::new().build();
-                let cmd = build(&profile, &["steam".to_string()]);
+                let cmd = build(
+                    &profile,
+                    profile.resolve_environment(LaunchMode::Gamescope),
+                    &["steam".to_string()],
+                );
 
-                // Hoisted: value captured from parent env
-                assert_eq!(cmd.hoisted_env.len(), 1);
-                assert_eq!(cmd.hoisted_env[0].0, "LD_PRELOAD");
-                assert_eq!(cmd.hoisted_env[0].1, "/fake/overlay.so");
+                // Value moves into argv; diagnostics retain only the name.
+                assert_eq!(cmd.hoisted_env_names, ["LD_PRELOAD"]);
+                assert!(cmd
+                    .argv
+                    .contains(&"LD_PRELOAD=/fake/overlay.so".to_string()));
 
                 // Stripped: name appears in unset so gamescope's env drops it
                 assert!(cmd.unset.contains(&"LD_PRELOAD".to_string()));
@@ -479,9 +451,13 @@ mod tests {
             ],
             || {
                 let profile = MockProfile::new().build();
-                let cmd = build(&profile, &["steam".to_string()]);
+                let cmd = build(
+                    &profile,
+                    profile.resolve_environment(LaunchMode::Gamescope),
+                    &["steam".to_string()],
+                );
 
-                assert_eq!(cmd.hoisted_env.len(), 2);
+                assert_eq!(cmd.hoisted_env_names.len(), 2);
                 assert!(cmd.unset.contains(&"LD_PRELOAD".to_string()));
                 assert!(cmd.unset.contains(&"LD_LIBRARY_PATH".to_string()));
             },
@@ -492,9 +468,13 @@ mod tests {
     fn test_hoist_noop_when_parent_unset() {
         with_env_vars(CLEAN_HOIST_ENV, || {
             let profile = MockProfile::new().build();
-            let cmd = build(&profile, &["steam".to_string()]);
+            let cmd = build(
+                &profile,
+                profile.resolve_environment(LaunchMode::Gamescope),
+                &["steam".to_string()],
+            );
 
-            assert!(cmd.hoisted_env.is_empty());
+            assert!(cmd.hoisted_env_names.is_empty());
             // Nothing to hoist → nothing added to unset for these names
             assert!(!cmd.unset.contains(&"LD_PRELOAD".to_string()));
             assert!(!cmd.unset.contains(&"LD_LIBRARY_PATH".to_string()));
@@ -514,9 +494,16 @@ mod tests {
                 profile
                     .user_env
                     .insert("LD_PRELOAD".to_string(), "/profile/custom.so".to_string());
-                let cmd = build(&profile, &["steam".to_string()]);
+                let cmd = build(
+                    &profile,
+                    profile.resolve_environment(LaunchMode::Gamescope),
+                    &["steam".to_string()],
+                );
 
-                assert!(!cmd.hoisted_env.iter().any(|(k, _)| k == "LD_PRELOAD"));
+                assert!(!cmd
+                    .hoisted_env_names
+                    .iter()
+                    .any(|name| name == "LD_PRELOAD"));
                 // And not added to unset (profile env would apply it to gamescope)
                 assert!(!cmd.unset.contains(&"LD_PRELOAD".to_string()));
             },
@@ -525,16 +512,7 @@ mod tests {
 
     #[test]
     fn test_child_env_prefix_combines_workaround_and_hoist() {
-        let cmd = GamescopeCommand {
-            binary: "gamescope".to_string(),
-            args: vec![],
-            env: vec![],
-            unset: vec![],
-            hoisted_env: vec![("LD_PRELOAD".to_string(), "/over.so".to_string())],
-            child: vec!["game".to_string()],
-            needs_workaround: true,
-        };
-        let prefix = cmd.child_env_prefix();
+        let prefix = child_env_prefix(true, &[("LD_PRELOAD".to_string(), "/over.so".to_string())]);
         assert_eq!(prefix[0], "env");
         assert!(prefix.contains(&"DISABLE_HDR_WSI=1".to_string()));
         assert!(prefix.contains(&"LD_PRELOAD=/over.so".to_string()));
@@ -542,16 +520,7 @@ mod tests {
 
     #[test]
     fn test_child_env_prefix_empty_when_nothing_to_inject() {
-        let cmd = GamescopeCommand {
-            binary: "gamescope".to_string(),
-            args: vec![],
-            env: vec![],
-            unset: vec![],
-            hoisted_env: vec![],
-            child: vec!["game".to_string()],
-            needs_workaround: false,
-        };
-        assert!(cmd.child_env_prefix().is_empty());
+        assert!(child_env_prefix(false, &[]).is_empty());
     }
 
     // ========================================================================

@@ -1,12 +1,18 @@
 //! Creates starter config files with all options documented.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use crate::config::MonitorsConfig;
 use crate::output;
+
+// Note: `options:` and `environment:` below are written as empty maps (`{}`).
+// A bare key followed only by comments parses as YAML null, which serde
+// rejects for a map field even with #[serde(default)] — that only covers
+// *missing* keys.
 
 const DEFAULT_MONITORS: &str = r#"# Wayscope Monitor Configuration
 #
@@ -70,7 +76,7 @@ profiles:
 
     # Gamescope command-line options
     # These override the defaults derived from your monitor config
-    options:
+    options: {}
       # backend: sdl               # Display backend (sdl, wayland, drm)
       # fullscreen: true           # Run in fullscreen mode
       # borderless: false          # Borderless window mode
@@ -99,7 +105,7 @@ profiles:
 
     # Environment variables passed to games
     # These are in addition to wayscope's default environment
-    environment:
+    environment: {}
       # MANGOHUD: 1                # Enable MangoHud overlay
       # DXVK_ASYNC: 1              # Enable DXVK async shader compilation
       # PROTON_USE_WINED3D: 1      # Use WineD3D instead of DXVK
@@ -173,16 +179,29 @@ pub fn run(force: bool) -> Result<()> {
 }
 
 fn write_config_file(path: &Path, content: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        output::warn(&format!(
-            "Skipped {} (already exists, use --force to overwrite)",
-            path.display()
-        ));
-        return Ok(());
+    if !force {
+        return match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => {
+                file.write_all(content.as_bytes())
+                    .with_context(|| format!("Failed to write: {}", path.display()))?;
+                output::success(&format!("Created {}", path.display()));
+                Ok(())
+            }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                output::warn(&format!(
+                    "Skipped {} (already exists, use --force to overwrite)",
+                    path.display()
+                ));
+                Ok(())
+            }
+            Err(err) => Err(err).with_context(|| format!("Failed to create: {}", path.display())),
+        };
     }
 
-    if path.exists() && force {
-        let existing = fs::read_to_string(path).unwrap_or_default();
+    let existed = path.exists();
+    if existed {
+        let existing = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read: {}", path.display()))?;
         if existing == content {
             output::info(&format!("Unchanged {}", path.display()));
             return Ok(());
@@ -190,12 +209,8 @@ fn write_config_file(path: &Path, content: &str, force: bool) -> Result<()> {
     }
 
     fs::write(path, content).with_context(|| format!("Failed to write: {}", path.display()))?;
-
-    if force && path.exists() {
-        output::success(&format!("Overwrote {}", path.display()));
-    } else {
-        output::success(&format!("Created {}", path.display()));
-    }
+    let verb = if existed { "Overwrote" } else { "Created" };
+    output::success(&format!("{} {}", verb, path.display()));
 
     Ok(())
 }
@@ -206,16 +221,20 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    // Deserialize into the real types, not serde_yaml::Value: Value accepts
+    // nulls and typos that the actual config structs reject at runtime.
     #[test]
-    fn test_default_monitors_is_valid_yaml() {
-        let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(DEFAULT_MONITORS);
-        assert!(result.is_ok(), "DEFAULT_MONITORS is not valid YAML");
+    fn test_default_monitors_deserializes() {
+        let monitors: MonitorsConfig =
+            serde_yaml::from_str(DEFAULT_MONITORS).expect("DEFAULT_MONITORS must deserialize");
+        assert!(monitors.monitors.contains_key("main"));
     }
 
     #[test]
-    fn test_default_config_is_valid_yaml() {
-        let result: Result<serde_yaml::Value, _> = serde_yaml::from_str(DEFAULT_CONFIG);
-        assert!(result.is_ok(), "DEFAULT_CONFIG is not valid YAML");
+    fn test_default_config_deserializes() {
+        let profiles: crate::config::ProfilesConfig =
+            serde_yaml::from_str(DEFAULT_CONFIG).expect("DEFAULT_CONFIG must deserialize");
+        assert!(profiles.profiles.contains_key("default"));
     }
 
     #[test]
@@ -249,5 +268,17 @@ mod tests {
         write_config_file(&path, "new content", true).unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "new content");
+    }
+
+    #[test]
+    fn test_write_config_file_force_propagates_read_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.yaml");
+        fs::create_dir(&path).unwrap();
+
+        let error = write_config_file(&path, "new content", true).unwrap_err();
+
+        assert!(error.to_string().contains("Failed to read"));
+        assert!(path.is_dir());
     }
 }
